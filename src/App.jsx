@@ -98,20 +98,42 @@ const App = () => {
       }
       setIsLoaded(true);
     };
-    loadItems();
+    loadItems().then(() => {
+      const dismissSplash = () => {
+        const splash = document.getElementById('splash');
+        if (splash) {
+          splash.classList.add('hide');
+          setTimeout(() => splash.remove(), 400);
+        }
+      };
+      // Wait a frame for React to render images into the DOM
+      requestAnimationFrame(() => {
+        const images = document.querySelectorAll('#root img');
+        if (images.length === 0) {
+          dismissSplash();
+          return;
+        }
+        const promises = Array.from(images).map(img =>
+          img.complete ? Promise.resolve() : new Promise(r => { img.onload = r; img.onerror = r; })
+        );
+        Promise.all(promises).then(dismissSplash);
+        setTimeout(dismissSplash, 8000);
+      });
+    });
   }, []);
 
   const sortShelf = (items) => {
     return [...items].sort((a, b) => {
-      // If items have manual order set, respect it
-      if (a.order !== undefined && b.order !== undefined) {
+      // Listened items always go to the bottom
+      if (a.listened !== b.listened) {
+        return a.listened ? 1 : -1;
+      }
+      // Within the same listened status, respect manual order
+      if (a.order != null && b.order != null) {
         return a.order - b.order;
       }
-      // Otherwise sort by listened status, then by date
-      if (a.listened === b.listened) {
-        return new Date(b.addedAt) - new Date(a.addedAt);
-      }
-      return a.listened ? 1 : -1;
+      // Otherwise sort by date added (newest first)
+      return new Date(b.addedAt) - new Date(a.addedAt);
     });
   };
 
@@ -638,12 +660,13 @@ const App = () => {
       console.error('Failed to update listened status:', e);
     }
 
-    setShelf(prev => {
-      const updated = prev.map(i =>
-        i.id === item.id ? { ...i, listened: newListened } : i
-      );
-      return sortShelf(updated);
-    });
+    // Update listened status immediately, then re-sort after a brief delay
+    setShelf(prev =>
+      prev.map(i => i.id === item.id ? { ...i, listened: newListened } : i)
+    );
+    setTimeout(() => {
+      setShelf(prev => sortShelf([...prev]));
+    }, 400);
   };
 
   const removeRecord = async (itemId) => {
@@ -670,10 +693,11 @@ const App = () => {
   };
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100 p-6">
+    <div className="min-h-screen bg-zinc-950 text-zinc-100 p-6" style={{ paddingTop: 'calc(env(safe-area-inset-top) + 1.5rem)' }}>
+      <div className="fixed top-0 left-0 right-0 z-50 pointer-events-none bg-zinc-950" style={{ height: 'env(safe-area-inset-top)' }} />
       <header className="max-w-5xl mx-auto flex justify-between items-center mb-12">
         <h1 className="text-2xl font-black uppercase tracking-tighter flex items-center gap-2">
-          <Disc className="w-8 h-8 text-indigo-500" /> Shelf
+          <span className="relative inline-flex items-center justify-center w-8 h-8 rounded-full bg-indigo-500"><span className="w-2 h-2 rounded-full bg-zinc-950" /></span> Shelf
         </h1>
         <button
           onClick={() => setIsSearchOpen(true)}
@@ -833,14 +857,13 @@ const App = () => {
 
       {/* Search Modal */}
       {isSearchOpen && (
-        <div className="fixed inset-0 z-50 bg-zinc-950/95 flex items-start justify-center p-6 pt-24 animate-fade-in">
-          <div className="max-w-xl w-full">
-            <div className="flex items-center gap-3">
+        <div className="fixed inset-0 z-50 bg-zinc-950/95 flex items-start justify-center p-6 pt-24 animate-fade-in" onClick={(e) => { if (e.target === e.currentTarget) closeSearch(); }}>
+          <div className="w-full max-w-xl">
               <textarea
                 autoFocus
                 rows={manualInput.includes('\n') ? 6 : 1}
-                placeholder="Artist - Album or just Artist name"
-                className="flex-1 bg-zinc-900 border border-white/10 rounded-xl p-4 text-lg focus:ring-2 ring-indigo-500 outline-none resize-none"
+                placeholder="Search for artist or album"
+                className="w-full bg-zinc-900 border border-white/10 rounded-xl p-4 text-lg focus:ring-2 ring-indigo-500 outline-none resize-none"
                 value={manualInput}
                 onChange={(e) => handleSearch(e.target.value)}
                 onKeyDown={(e) => {
@@ -851,13 +874,6 @@ const App = () => {
                   }
                 }}
               />
-              <button
-                onClick={closeSearch}
-                className="p-3 hover:bg-zinc-800 rounded-full transition-colors"
-              >
-                <X className="w-6 h-6" />
-              </button>
-            </div>
 
             {/* Search Results */}
             {!manualInput.includes('\n') && (

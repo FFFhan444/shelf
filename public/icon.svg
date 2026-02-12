@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180">
+  <rect width="180" height="180" rx="40" fill="#4f46e5"/>
+  <!-- Outer disc -->
+  <circle cx="90" cy="90" r="62" fill="#18181b"/>
+  <!-- Grooves -->
+  <circle cx="90" cy="90" r="55" fill="none" stroke="#27272a" stroke-width="0.75"/>
+  <circle cx="90" cy="90" r="48" fill="none" stroke="#27272a" stroke-width="0.75"/>
+  <circle cx="90" cy="90" r="41" fill="none" stroke="#27272a" stroke-width="0.75"/>
+  <circle cx="90" cy="90" r="34" fill="none" stroke="#27272a" stroke-width="0.75"/>
+  <!-- Label -->
+  <circle cx="90" cy="90" r="20" fill="#4f46e5"/>
+  <!-- Spindle hole -->
+  <circle cx="90" cy="90" r="4" fill="#18181b"/>
+</svg>
