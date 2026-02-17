@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Disc, Plus, Trash2, X, Music4, Check, Circle, User, RefreshCw, Loader2 } from 'lucide-react';
+import { Disc, Plus, Trash2, X, Music4, Check, Circle, User, RefreshCw, Loader2, Star } from 'lucide-react';
 import { supabase } from './supabaseClient';
 
 // Map DB row (snake_case) to frontend object (camelCase)
@@ -13,8 +13,10 @@ const fromDb = (row) => ({
   year: row.year,
   mbid: row.mbid,
   coverUrl: row.cover_url,
+  releaseDate: row.release_date,
   addedAt: row.added_at,
   listened: row.listened ?? false,
+  listenAgain: row.listen_again ?? false,
   order: row.item_order
 });
 
@@ -29,10 +31,34 @@ const toDb = (item) => ({
   year: item.year || null,
   mbid: item.mbid || null,
   cover_url: item.coverUrl || null,
+  release_date: item.releaseDate || null,
   added_at: item.addedAt,
   listened: item.listened ?? false,
+  listen_again: item.listenAgain ?? false,
   item_order: item.order ?? null
 });
+
+// Returns a short label for upcoming releases, or null if already released
+const getReleaseBadge = (releaseDate) => {
+  if (!releaseDate) return null;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const release = new Date(releaseDate + (releaseDate.length === 10 ? 'T00:00:00' : ''));
+  release.setHours(0, 0, 0, 0);
+  if (isNaN(release.getTime())) return null;
+  const diffMs = release - today;
+  if (diffMs < 0) return null;
+  const diffDays = Math.round(diffMs / (1000 * 60 * 60 * 24));
+  if (diffDays === 0) return 'Today';
+  if (diffDays === 1) return 'Tomorrow';
+  if (diffDays <= 6) return `In ${diffDays} days`;
+  if (diffDays <= 13) return 'Next week';
+  if (release.getMonth() === today.getMonth() && release.getFullYear() === today.getFullYear()) return 'This month';
+  const nextMonth = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+  if (release.getMonth() === nextMonth.getMonth() && release.getFullYear() === nextMonth.getFullYear()) return 'Next month';
+  const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return `${monthNames[release.getMonth()]} ${release.getFullYear()}`;
+};
 
 // Component for the rotating arched text
 const RotatingText = ({ text }) => {
@@ -434,6 +460,7 @@ const App = () => {
           title: rg.title,
           artist: rg['artist-credit']?.[0]?.name || 'Unknown Artist',
           year: rg['first-release-date']?.split('-')[0] || '',
+          releaseDate: rg['first-release-date'] || null,
           mbid: rg.id
         })) || [];
 
@@ -462,6 +489,7 @@ const App = () => {
       title: album.title,
       artist: album.artist,
       year: album.year,
+      releaseDate: album.releaseDate,
       mbid: album.mbid,
       coverUrl: null,
       addedAt: new Date().toISOString(),
@@ -580,6 +608,7 @@ const App = () => {
           title: rg.title,
           artist: rg['artist-credit']?.[0]?.name || artist,
           year: rg['first-release-date']?.split('-')[0] || 'TBA',
+          releaseDate: rg['first-release-date'] || null,
           mbid: rg.id
         };
         addAlbum(album);
@@ -669,6 +698,24 @@ const App = () => {
     }, 400);
   };
 
+  const toggleListenAgain = async (item) => {
+    const newListenAgain = !item.listenAgain;
+
+    try {
+      const { error } = await supabase
+        .from('items')
+        .update({ listen_again: newListenAgain })
+        .eq('id', item.id);
+      if (error) console.error('Failed to update listen again status:', error);
+    } catch (e) {
+      console.error('Failed to update listen again status:', e);
+    }
+
+    setShelf(prev =>
+      prev.map(i => i.id === item.id ? { ...i, listenAgain: newListenAgain } : i)
+    );
+  };
+
   const removeRecord = async (itemId) => {
     // Delete from Supabase
     try {
@@ -723,9 +770,7 @@ const App = () => {
               onDrop={(e) => handleDrop(e)}
               className={`group relative aspect-square bg-zinc-900 overflow-hidden border border-white/5 shadow-xl ${
                 isDragging ? 'opacity-0' : ''
-              } ${!isDragging && 'cursor-grab active:cursor-grabbing'} ${
-                item.listened && !draggedItem ? 'opacity-30' : ''
-              }`}
+              } ${!isDragging && 'cursor-grab active:cursor-grabbing'}`}
               style={{
                 transition: isDragging
                   ? 'opacity 0.2s ease-out'
@@ -737,25 +782,51 @@ const App = () => {
               }}
             >
 
-              {item.coverUrl ? (
-                <img src={item.coverUrl} className="w-full h-full object-cover" alt={item.type === 'artist' ? item.name : item.title} />
-              ) : (
-                <div className="w-full h-full flex flex-col items-center justify-center p-4 text-center bg-gradient-to-br from-zinc-800 to-zinc-900">
-                  {item.type === 'artist' ? (
-                    <>
-                      <User className="w-8 h-8 text-zinc-600 mb-2" />
-                      <p className="text-xs font-bold line-clamp-2">{item.name}</p>
-                      {item.disambiguation && (
-                        <p className="text-[10px] opacity-50 italic line-clamp-1">{item.disambiguation}</p>
-                      )}
-                    </>
-                  ) : (
-                    <>
-                      <Disc className="w-8 h-8 text-zinc-600 mb-2" />
-                      <p className="text-xs font-bold line-clamp-2">{item.artist}</p>
-                      <p className="text-[10px] opacity-50 italic line-clamp-1">{item.title}</p>
-                    </>
-                  )}
+              {/* Content layer — faded for listened items */}
+              <div className={`absolute inset-0 ${item.listened && !draggedItem ? 'opacity-30' : ''}`}>
+                {(() => {
+                  const badge = getReleaseBadge(item.releaseDate);
+                  if (!badge) return null;
+                  return (
+                    <div
+                      className="absolute top-2 right-2 z-40 bg-indigo-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full shadow-lg"
+                      title={`Release date: ${item.releaseDate}`}
+                    >
+                      {badge}
+                    </div>
+                  );
+                })()}
+
+                {item.coverUrl ? (
+                  <img src={item.coverUrl} className="w-full h-full object-cover" alt={item.type === 'artist' ? item.name : item.title} />
+                ) : (
+                  <div className="w-full h-full flex flex-col items-center justify-center p-4 text-center bg-gradient-to-br from-zinc-800 to-zinc-900">
+                    {item.type === 'artist' ? (
+                      <>
+                        <User className="w-8 h-8 text-zinc-600 mb-2" />
+                        <p className="text-xs font-bold line-clamp-2">{item.name}</p>
+                        {item.disambiguation && (
+                          <p className="text-[10px] opacity-50 italic line-clamp-1">{item.disambiguation}</p>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <Disc className="w-8 h-8 text-zinc-600 mb-2" />
+                        <p className="text-xs font-bold line-clamp-2">{item.artist}</p>
+                        <p className="text-[10px] opacity-50 italic line-clamp-1">{item.title}</p>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Listen again badge — outside faded layer so it stays bright */}
+              {item.listenAgain && (
+                <div
+                  className="absolute bottom-2 right-2 z-40 bg-amber-500 p-1 rounded-full shadow-lg"
+                  title="Flagged to listen again"
+                >
+                  <Star className="w-3 h-3 text-white" strokeWidth={3} />
                 </div>
               )}
 
@@ -771,16 +842,25 @@ const App = () => {
                 <div className="absolute inset-0 flex items-center justify-center gap-3 z-30">
                   <button
                     onClick={() => toggleListened(item)}
-                    className="p-2 rounded-full transition-all duration-200 transform active:scale-90"
+                    className={`p-2 rounded-full transition-all duration-200 active:scale-90 ${
+                      item.listened ? 'bg-green-600 hover:bg-green-500' : 'bg-zinc-800/80 hover:bg-zinc-700/80'
+                    }`}
                     title={item.listened ? "Mark as unlistened" : "Mark as listened"}
                   >
                     {item.listened ? (
-                      <div className="bg-green-600 p-1 rounded-full">
-                        <Check className="w-4 h-4 text-white" strokeWidth={3} />
-                      </div>
+                      <Check className="w-5 h-5 text-white" strokeWidth={2.5} />
                     ) : (
-                      <Circle className="w-6 h-6 text-zinc-400" strokeWidth={2} />
+                      <Circle className="w-5 h-5 text-zinc-300" strokeWidth={2} />
                     )}
+                  </button>
+                  <button
+                    onClick={() => toggleListenAgain(item)}
+                    className={`p-2 rounded-full transition-all duration-200 active:scale-90 ${
+                      item.listenAgain ? 'bg-amber-500 hover:bg-amber-400' : 'bg-zinc-800/80 hover:bg-zinc-700/80'
+                    }`}
+                    title={item.listenAgain ? "Remove listen again flag" : "Flag to listen again"}
+                  >
+                    <Star className={`w-5 h-5 ${item.listenAgain ? 'text-white' : 'text-zinc-300'}`} strokeWidth={2} />
                   </button>
                   {!item.coverUrl && (
                     <button
@@ -791,18 +871,18 @@ const App = () => {
                           fetchAlbumArtwork(item.artist, item.title, item.id);
                         }
                       }}
-                      className="p-2 bg-zinc-800/80 rounded-full hover:bg-indigo-600 transition-colors"
+                      className="p-2 bg-zinc-800/80 rounded-full hover:bg-indigo-600 transition-all duration-200 active:scale-90"
                       title="Retry fetching artwork"
                     >
-                      <RefreshCw className="w-4 h-4 text-zinc-300" />
+                      <RefreshCw className="w-5 h-5 text-zinc-300" />
                     </button>
                   )}
                   <button
                     onClick={() => removeRecord(item.id)}
-                    className="p-2 bg-zinc-800/80 rounded-full hover:bg-red-600 transition-colors"
+                    className="p-2 bg-zinc-800/80 rounded-full hover:bg-red-600 transition-all duration-200 active:scale-90"
                     title="Remove from shelf"
                   >
-                    <Trash2 className="w-4 h-4 text-zinc-300" />
+                    <Trash2 className="w-5 h-5 text-zinc-300" />
                   </button>
                 </div>
               </div>
