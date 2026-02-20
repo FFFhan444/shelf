@@ -842,7 +842,11 @@ const App = () => {
     setShelf(prev => sortShelf([...prev, newItem]));
   };
 
-  // Rack shuffle (slot-machine animation)
+  // Rack constants
+  const RACK_ANGLE_STEP = 22; // degrees between each item on the drum
+  const RACK_RADIUS = 300; // cylinder radius in px
+
+  // Rack shuffle — spins the drum multiple full turns then lands on target
   const handleShuffle = useCallback(() => {
     const items = shelf.filter(i => i.coverUrl);
     const unlistened = items.filter(i => !i.listened);
@@ -853,31 +857,27 @@ const App = () => {
     if (targetIdx === -1) return;
 
     setIsShuffling(true);
-    const totalTicks = 18 + Math.floor(Math.random() * 8);
-    let tick = 0;
-    let delay = 30;
 
-    const advance = () => {
-      tick++;
-      setActiveIndex(prev => (prev + 1) % items.length);
+    // Spin: go forward by 2-3 full drum revolutions + distance to target
+    const fullRevItems = Math.ceil(360 / RACK_ANGLE_STEP);
+    const spins = (2 + Math.floor(Math.random() * 2)) * fullRevItems;
+    const overshootIdx = targetIdx + spins;
 
-      if (tick >= totalTicks) {
-        // Overshoot by 1, then settle back
+    setActiveIndex(overshootIdx);
+
+    // After the spin transition completes, snap to real index and settle
+    setTimeout(() => {
+      // Briefly disable transition, snap to actual targetIdx + 1 (overshoot)
+      setActiveIndex(-1); // sentinel to trigger no-transition snap
+      requestAnimationFrame(() => {
+        setActiveIndex(targetIdx + 1 >= items.length ? 0 : targetIdx + 1);
+        // Then settle back to exact target
         setTimeout(() => {
-          setActiveIndex(targetIdx + 1 < items.length ? targetIdx + 1 : 0);
-          setTimeout(() => {
-            setActiveIndex(targetIdx);
-            setIsShuffling(false);
-          }, 250);
-        }, delay);
-        return;
-      }
-
-      delay *= 1.12;
-      setTimeout(advance, delay);
-    };
-
-    setTimeout(advance, delay);
+          setActiveIndex(targetIdx);
+          setTimeout(() => setIsShuffling(false), 400);
+        }, 50);
+      });
+    }, 2200);
   }, [shelf, isShuffling]);
 
   const toggleListened = async (item) => {
@@ -1207,7 +1207,7 @@ const App = () => {
           )}
         </div>
         ) : (
-        /* Rack View */
+        /* Rack View — 3D cylinder drum */
         <div className="flex flex-col items-center flex-1 min-h-0">
           {rackItems.length < 5 ? (
             <div className="py-20 text-center text-zinc-600">
@@ -1217,9 +1217,11 @@ const App = () => {
             </div>
           ) : (
             <>
+              {/* Perspective wrapper */}
               <div
                 ref={rackRef}
-                className="relative w-full max-w-md select-none flex-1 min-h-0"
+                className="relative flex-1 min-h-0 w-full max-w-md select-none overflow-hidden"
+                style={{ perspective: '1000px' }}
                 onTouchStart={(e) => {
                   if (isShuffling) return;
                   rackRef.current._touchY = e.touches[0].clientY;
@@ -1236,52 +1238,50 @@ const App = () => {
                   }
                 }}
               >
-                <div className="absolute inset-0 flex items-center justify-center">
-                  {/* Render far items first, center item last (painter's algorithm) */}
-                  {[-4, 4, -3, 3, -2, 2, -1, 1, 0].map((offset) => {
-                    const index = activeIndex + offset;
-                    if (index < 0 || index >= rackItems.length) return null;
-                    const item = rackItems[index];
-                    const absOffset = Math.abs(offset);
-
-                    const translateY = offset * 80;
-                    const scale = 1 - absOffset * 0.08;
-                    const opacity = 1 - absOffset * 0.2;
-                    const rotateX = offset * -30;
-
-                    return (
-                      <div
-                        key={item.id}
-                        className="absolute overflow-hidden rounded-lg"
-                        style={{
-                          width: '260px',
-                          height: '260px',
-                          // Per-item perspective: each cover gets its own 3D context
-                          // so they render as flat layers that can't intersect
-                          transform: `perspective(600px) translateY(${translateY}px) rotateX(${rotateX}deg) scale(${Math.max(scale, 0.5)})`,
-                          opacity: Math.max(opacity, 0),
-                          transition: isShuffling
-                            ? 'transform 0.12s linear, opacity 0.12s linear'
-                            : 'transform 0.4s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.4s ease-out',
-                          boxShadow: absOffset === 0
-                            ? '0 25px 50px rgba(0,0,0,0.8), 0 0 0 1px rgba(255,255,255,0.05)'
-                            : `0 ${8 - absOffset * 2}px ${20 - absOffset * 4}px rgba(0,0,0,0.5)`,
-                          filter: absOffset > 0 ? `brightness(${1 - absOffset * 0.12})` : 'none',
-                        }}
-                      >
-                        <img src={item.coverUrl} className="w-full h-full object-cover" alt={item.title || item.name} draggable={false} />
-                      </div>
-                    );
-                  })}
+                {/* Rotating drum — the whole drum turns, items are fixed on its surface */}
+                <div
+                  className="absolute inset-0 flex items-center justify-center"
+                  style={{
+                    transformStyle: 'preserve-3d',
+                    transform: `translateZ(-${RACK_RADIUS}px) rotateX(${activeIndex * RACK_ANGLE_STEP}deg)`,
+                    transition: activeIndex === -1
+                      ? 'none'
+                      : isShuffling
+                        ? 'transform 2s cubic-bezier(0.2, 0.8, 0.3, 1)'
+                        : 'transform 0.5s cubic-bezier(0.23, 1, 0.32, 1)',
+                  }}
+                >
+                  {rackItems.map((item, i) => (
+                    <div
+                      key={item.id}
+                      className="absolute overflow-hidden rounded-lg"
+                      style={{
+                        width: '260px',
+                        height: '260px',
+                        transform: `rotateX(${-i * RACK_ANGLE_STEP}deg) translateZ(${RACK_RADIUS}px)`,
+                        backfaceVisibility: 'hidden',
+                        boxShadow: '0 10px 40px rgba(0,0,0,0.6)',
+                      }}
+                    >
+                      <img src={item.coverUrl} className="w-full h-full object-cover" alt={item.title || item.name} draggable={false} />
+                    </div>
+                  ))}
                 </div>
               </div>
 
               {/* Info + shuffle pinned to bottom */}
               <div className="flex-shrink-0 flex flex-col items-center pb-2">
-                {rackItems[activeIndex] && (
+                {rackItems[activeIndex >= 0 ? activeIndex % rackItems.length : 0] && (
                   <div className="text-center mb-3">
-                    <p className="text-lg font-bold">{rackItems[activeIndex].type === 'artist' ? rackItems[activeIndex].name : rackItems[activeIndex].title}</p>
-                    <p className="text-sm text-zinc-400">{rackItems[activeIndex].type === 'artist' ? 'Discography' : rackItems[activeIndex].artist}</p>
+                    {(() => {
+                      const item = rackItems[activeIndex >= 0 ? activeIndex % rackItems.length : 0];
+                      return (
+                        <>
+                          <p className="text-lg font-bold">{item.type === 'artist' ? item.name : item.title}</p>
+                          <p className="text-sm text-zinc-400">{item.type === 'artist' ? 'Discography' : item.artist}</p>
+                        </>
+                      );
+                    })()}
                   </div>
                 )}
                 <button
