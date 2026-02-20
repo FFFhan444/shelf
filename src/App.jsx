@@ -842,8 +842,10 @@ const App = () => {
   };
 
   // Rack constants — angle must be large enough that adjacent covers don't overlap
-  const RACK_ANGLE_STEP = 40;
-  const RACK_RADIUS = 380;
+  // Dynamic angle step: ensure all items fit on the cylinder without repeating
+  // Clamp between 10° (many items) and 30° (few items)
+  const RACK_ANGLE_STEP = Math.max(10, Math.min(30, 360 / Math.max(rackItems.length, 1)));
+  const RACK_RADIUS = 300;
 
   const toggleListened = async (item) => {
     const newListened = !item.listened;
