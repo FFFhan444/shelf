@@ -947,30 +947,32 @@ const App = () => {
   // Items with covers for rack view
   const rackItems = shelf.filter(i => i.coverUrl);
 
-  // Wire up rack scroll via custom event (needed because wheel must be non-passive)
+  // Lock body scroll and capture wheel globally in rack mode
   useEffect(() => {
-    const el = rackRef.current;
-    if (!el || viewMode !== 'rack') return;
-    const handler = (e) => {
-      const dir = e.detail.direction;
-      setActiveIndex(prev => {
-        const next = prev + dir;
-        return Math.max(0, Math.min(next, rackItems.length - 1));
-      });
-    };
-    el.addEventListener('rackscroll', handler);
-    return () => el.removeEventListener('rackscroll', handler);
-  }, [viewMode, rackItems.length]);
+    if (viewMode !== 'rack') return;
+    document.body.style.overflow = 'hidden';
 
-  // Keep rack element informed about shuffle state for wheel blocking
-  useEffect(() => {
-    if (rackRef.current) rackRef.current._shuffling = isShuffling;
-  }, [isShuffling]);
+    const onWheel = (e) => {
+      e.preventDefault();
+      if (isShuffling) return;
+      if (rackRef.current?._wheelLock) return;
+      rackRef.current._wheelLock = true;
+      setTimeout(() => { if (rackRef.current) rackRef.current._wheelLock = false; }, 100);
+      const dir = e.deltaY > 0 ? 1 : -1;
+      setActiveIndex(prev => Math.max(0, Math.min(prev + dir, rackItems.length - 1)));
+    };
+
+    document.addEventListener('wheel', onWheel, { passive: false });
+    return () => {
+      document.body.style.overflow = '';
+      document.removeEventListener('wheel', onWheel);
+    };
+  }, [viewMode, isShuffling, rackItems.length]);
 
   return (
-    <div className={`${viewMode === 'rack' ? 'h-screen overflow-hidden' : 'min-h-screen'} bg-zinc-950 text-zinc-100 p-6`} style={{ paddingTop: 'calc(env(safe-area-inset-top) + 1.5rem)' }}>
+    <div className={`${viewMode === 'rack' ? 'h-[100dvh] overflow-hidden flex flex-col' : 'min-h-screen'} bg-zinc-950 text-zinc-100 p-6`} style={{ paddingTop: 'calc(env(safe-area-inset-top) + 1.5rem)' }}>
       <div className="fixed top-0 left-0 right-0 z-50 pointer-events-none bg-zinc-950" style={{ height: 'env(safe-area-inset-top)' }} />
-      <header className="max-w-5xl mx-auto flex justify-between items-center mb-12">
+      <header className={`max-w-5xl mx-auto flex justify-between items-center ${viewMode === 'rack' ? 'mb-4 flex-shrink-0' : 'mb-12'}`}>
         <h1 className="text-2xl font-black uppercase tracking-tighter flex items-center gap-2">
           <span className="relative inline-flex items-center justify-center w-8 h-8 rounded-full bg-indigo-500"><span className="w-2 h-2 rounded-full bg-zinc-950" /></span> Shelf
         </h1>
@@ -991,7 +993,7 @@ const App = () => {
         </div>
       </header>
 
-      <main className="max-w-5xl mx-auto">
+      <main className={`max-w-5xl mx-auto ${viewMode === 'rack' ? 'flex-1 min-h-0 flex flex-col' : ''}`}>
         {viewMode === 'grid' ? (
         <div ref={gridRef} className="relative grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-6">
           {shelf.map((item, index) => {
@@ -1206,7 +1208,7 @@ const App = () => {
         </div>
         ) : (
         /* Rack View */
-        <div className="flex flex-col items-center" style={{ height: 'calc(100vh - 140px)' }}>
+        <div className="flex flex-col items-center flex-1 min-h-0">
           {rackItems.length < 5 ? (
             <div className="py-20 text-center text-zinc-600">
               <Layers className="w-10 h-10 mx-auto mb-2 opacity-20" />
@@ -1216,33 +1218,16 @@ const App = () => {
           ) : (
             <>
               <div
-                ref={(el) => {
-                  rackRef.current = el;
-                  // Attach non-passive wheel listener to allow preventDefault
-                  if (el && !el._wheelAttached) {
-                    el._wheelAttached = true;
-                    el.addEventListener('wheel', (e) => {
-                      e.preventDefault();
-                      if (el._shuffling) return;
-                      // Throttle wheel events
-                      if (el._wheelLock) return;
-                      el._wheelLock = true;
-                      setTimeout(() => { el._wheelLock = false; }, 120);
-                      el.dispatchEvent(new CustomEvent('rackscroll', { detail: { direction: e.deltaY > 0 ? 1 : -1 } }));
-                    }, { passive: false });
-                  }
-                }}
-                onRackscroll={undefined}
-                className="relative w-full max-w-sm select-none flex-1"
-                style={{ perspective: '800px', minHeight: 0 }}
+                ref={rackRef}
+                className="relative w-full max-w-md select-none flex-1 min-h-0"
                 onTouchStart={(e) => {
                   if (isShuffling) return;
                   rackRef.current._touchY = e.touches[0].clientY;
                 }}
                 onTouchMove={(e) => {
-                  if (isShuffling || !rackRef.current._touchY) return;
+                  if (isShuffling || !rackRef.current?._touchY) return;
                   const diff = rackRef.current._touchY - e.touches[0].clientY;
-                  if (Math.abs(diff) > 40) {
+                  if (Math.abs(diff) > 30) {
                     setActiveIndex(prev => {
                       if (diff > 0) return Math.min(prev + 1, rackItems.length - 1);
                       return Math.max(prev - 1, 0);
@@ -1253,33 +1238,35 @@ const App = () => {
               >
                 <div className="absolute inset-0 flex items-center justify-center">
                   {/* Render far items first, center item last (painter's algorithm) */}
-                  {[...Array(9)].map((_, i) => {
-                    // Render from offset -4 to +4, but order: -4,-3,+4,+3,-2,+2,-1,+1,0
-                    const renderOrder = [-4, 4, -3, 3, -2, 2, -1, 1, 0];
-                    const offset = renderOrder[i];
+                  {[-4, 4, -3, 3, -2, 2, -1, 1, 0].map((offset) => {
                     const index = activeIndex + offset;
                     if (index < 0 || index >= rackItems.length) return null;
                     const item = rackItems[index];
                     const absOffset = Math.abs(offset);
 
-                    const translateY = offset * 75;
-                    const scale = 1 - absOffset * 0.1;
-                    const opacity = 1 - absOffset * 0.22;
-                    // Slight tilt for depth feel, but keep it subtle to avoid intersection
-                    const rotateX = offset * -12;
+                    const translateY = offset * 80;
+                    const scale = 1 - absOffset * 0.08;
+                    const opacity = 1 - absOffset * 0.2;
+                    const rotateX = offset * -30;
 
                     return (
                       <div
                         key={item.id}
-                        className="absolute overflow-hidden rounded-md"
+                        className="absolute overflow-hidden rounded-lg"
                         style={{
-                          width: '240px',
-                          height: '240px',
-                          transform: `translateY(${translateY}px) scale(${Math.max(scale, 0.4)}) rotateX(${rotateX}deg)`,
+                          width: '260px',
+                          height: '260px',
+                          // Per-item perspective: each cover gets its own 3D context
+                          // so they render as flat layers that can't intersect
+                          transform: `perspective(600px) translateY(${translateY}px) rotateX(${rotateX}deg) scale(${Math.max(scale, 0.5)})`,
                           opacity: Math.max(opacity, 0),
-                          transition: isShuffling ? 'transform 0.15s linear, opacity 0.15s linear' : 'transform 0.35s ease-out, opacity 0.35s ease-out',
-                          boxShadow: absOffset === 0 ? '0 20px 60px rgba(0,0,0,0.7)' : '0 8px 24px rgba(0,0,0,0.4)',
-                          filter: absOffset > 0 ? `brightness(${1 - absOffset * 0.15})` : 'none',
+                          transition: isShuffling
+                            ? 'transform 0.12s linear, opacity 0.12s linear'
+                            : 'transform 0.4s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.4s ease-out',
+                          boxShadow: absOffset === 0
+                            ? '0 25px 50px rgba(0,0,0,0.8), 0 0 0 1px rgba(255,255,255,0.05)'
+                            : `0 ${8 - absOffset * 2}px ${20 - absOffset * 4}px rgba(0,0,0,0.5)`,
+                          filter: absOffset > 0 ? `brightness(${1 - absOffset * 0.12})` : 'none',
                         }}
                       >
                         <img src={item.coverUrl} className="w-full h-full object-cover" alt={item.title || item.name} draggable={false} />
@@ -1289,27 +1276,27 @@ const App = () => {
                 </div>
               </div>
 
-              {/* Info for active item */}
-              {rackItems[activeIndex] && (
-                <div className="text-center py-3 flex-shrink-0">
-                  <p className="text-lg font-bold">{rackItems[activeIndex].type === 'artist' ? rackItems[activeIndex].name : rackItems[activeIndex].title}</p>
-                  <p className="text-sm text-zinc-400">{rackItems[activeIndex].type === 'artist' ? 'Discography' : rackItems[activeIndex].artist}</p>
-                </div>
-              )}
-
-              {/* Shuffle button */}
-              <button
-                onClick={handleShuffle}
-                disabled={isShuffling}
-                className={`mb-4 flex items-center gap-2 px-6 py-3 rounded-full font-bold transition-all active:scale-95 flex-shrink-0 ${
-                  isShuffling
-                    ? 'bg-zinc-700 text-zinc-400 cursor-not-allowed'
-                    : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg'
-                }`}
-              >
-                <Shuffle className={`w-5 h-5 ${isShuffling ? 'animate-spin' : ''}`} />
-                {isShuffling ? 'Spinning...' : 'Shuffle'}
-              </button>
+              {/* Info + shuffle pinned to bottom */}
+              <div className="flex-shrink-0 flex flex-col items-center pb-2">
+                {rackItems[activeIndex] && (
+                  <div className="text-center mb-3">
+                    <p className="text-lg font-bold">{rackItems[activeIndex].type === 'artist' ? rackItems[activeIndex].name : rackItems[activeIndex].title}</p>
+                    <p className="text-sm text-zinc-400">{rackItems[activeIndex].type === 'artist' ? 'Discography' : rackItems[activeIndex].artist}</p>
+                  </div>
+                )}
+                <button
+                  onClick={handleShuffle}
+                  disabled={isShuffling}
+                  className={`flex items-center gap-2 px-6 py-3 rounded-full font-bold transition-all active:scale-95 ${
+                    isShuffling
+                      ? 'bg-zinc-700 text-zinc-400 cursor-not-allowed'
+                      : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg'
+                  }`}
+                >
+                  <Shuffle className={`w-5 h-5 ${isShuffling ? 'animate-spin' : ''}`} />
+                  {isShuffling ? 'Spinning...' : 'Shuffle'}
+                </button>
+              </div>
             </>
           )}
         </div>
