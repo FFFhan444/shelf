@@ -842,9 +842,10 @@ const App = () => {
     setShelf(prev => sortShelf([...prev, newItem]));
   };
 
-  // Rack constants
-  const RACK_ANGLE_STEP = 22; // degrees between each item on the drum
-  const RACK_RADIUS = 300; // cylinder radius in px
+  // Rack constants — angle must be large enough that adjacent covers don't overlap
+  // At 40° on a 400px radius, vertical gap between adjacent items ≈ 257px
+  const RACK_ANGLE_STEP = 40;
+  const RACK_RADIUS = 400;
 
   // Rack shuffle — spins the drum multiple full turns then lands on target
   const handleShuffle = useCallback(() => {
@@ -1220,8 +1221,8 @@ const App = () => {
               {/* Perspective wrapper */}
               <div
                 ref={rackRef}
-                className="relative flex-1 min-h-0 w-full max-w-md select-none overflow-hidden"
-                style={{ perspective: '1000px' }}
+                className="relative flex-1 min-h-0 w-full select-none overflow-hidden"
+                style={{ perspective: '800px', perspectiveOrigin: '50% 50%' }}
                 onTouchStart={(e) => {
                   if (isShuffling) return;
                   rackRef.current._touchY = e.touches[0].clientY;
@@ -1256,8 +1257,8 @@ const App = () => {
                       key={item.id}
                       className="absolute overflow-hidden rounded-lg"
                       style={{
-                        width: '260px',
-                        height: '260px',
+                        width: '220px',
+                        height: '220px',
                         transform: `rotateX(${-i * RACK_ANGLE_STEP}deg) translateZ(${RACK_RADIUS}px)`,
                         backfaceVisibility: 'hidden',
                         boxShadow: '0 10px 40px rgba(0,0,0,0.6)',
