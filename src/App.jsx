@@ -1254,14 +1254,13 @@ const App = () => {
                   {rackItems.map((item, i) => (
                     <div
                       key={item.id}
-                      className="absolute rounded-lg"
+                      className="absolute"
                       style={{
                         width: 'min(220px, 55vw)',
                         height: 'min(220px, 55vw)',
                         transform: `rotateX(${-i * RACK_ANGLE_STEP}deg) translateZ(${RACK_RADIUS}px)`,
                         backfaceVisibility: 'hidden',
-                        transformStyle: 'flat', // allows overflow clip inside preserve-3d parent
-                        overflow: 'hidden',
+                        clipPath: 'inset(0 round 8px)',
                         boxShadow: '0 10px 40px rgba(0,0,0,0.6)',
                       }}
                     >
