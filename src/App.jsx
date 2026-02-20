@@ -133,26 +133,11 @@ const App = () => {
       setIsLoaded(true);
     };
     loadItems().then(() => {
-      const dismissSplash = () => {
-        const splash = document.getElementById('splash');
-        if (splash) {
-          splash.classList.add('hide');
-          setTimeout(() => splash.remove(), 400);
-        }
-      };
-      // Wait a frame for React to render images into the DOM
-      requestAnimationFrame(() => {
-        const images = document.querySelectorAll('#root img');
-        if (images.length === 0) {
-          dismissSplash();
-          return;
-        }
-        const promises = Array.from(images).slice(0, 8).map(img =>
-          img.complete ? Promise.resolve() : new Promise(r => { img.onload = r; img.onerror = r; })
-        );
-        Promise.all(promises).then(dismissSplash);
-        setTimeout(dismissSplash, 3000);
-      });
+      const splash = document.getElementById('splash');
+      if (splash) {
+        splash.classList.add('hide');
+        setTimeout(() => splash.remove(), 400);
+      }
     });
   }, []);
 
