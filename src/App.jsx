@@ -844,36 +844,36 @@ const App = () => {
 
   // Rack shuffle (slot-machine animation)
   const handleShuffle = useCallback(() => {
-    const rackItems = shelf.filter(i => i.coverUrl);
-    const unlistened = rackItems.filter(i => !i.listened);
+    const items = shelf.filter(i => i.coverUrl);
+    const unlistened = items.filter(i => !i.listened);
     if (unlistened.length === 0 || isShuffling) return;
 
     const targetItem = unlistened[Math.floor(Math.random() * unlistened.length)];
-    const targetIdx = rackItems.indexOf(targetItem);
+    const targetIdx = items.indexOf(targetItem);
     if (targetIdx === -1) return;
 
     setIsShuffling(true);
-    const totalTicks = 40 + Math.floor(Math.random() * 20);
+    const totalTicks = 18 + Math.floor(Math.random() * 8);
     let tick = 0;
-    let delay = 50;
+    let delay = 30;
 
     const advance = () => {
       tick++;
-      setActiveIndex(prev => (prev + 1) % rackItems.length);
+      setActiveIndex(prev => (prev + 1) % items.length);
 
       if (tick >= totalTicks) {
         // Overshoot by 1, then settle back
         setTimeout(() => {
-          setActiveIndex(targetIdx + 1 < rackItems.length ? targetIdx + 1 : 0);
+          setActiveIndex(targetIdx + 1 < items.length ? targetIdx + 1 : 0);
           setTimeout(() => {
             setActiveIndex(targetIdx);
             setIsShuffling(false);
-          }, 300);
+          }, 250);
         }, delay);
         return;
       }
 
-      delay *= 1.08;
+      delay *= 1.12;
       setTimeout(advance, delay);
     };
 
@@ -947,8 +947,28 @@ const App = () => {
   // Items with covers for rack view
   const rackItems = shelf.filter(i => i.coverUrl);
 
+  // Wire up rack scroll via custom event (needed because wheel must be non-passive)
+  useEffect(() => {
+    const el = rackRef.current;
+    if (!el || viewMode !== 'rack') return;
+    const handler = (e) => {
+      const dir = e.detail.direction;
+      setActiveIndex(prev => {
+        const next = prev + dir;
+        return Math.max(0, Math.min(next, rackItems.length - 1));
+      });
+    };
+    el.addEventListener('rackscroll', handler);
+    return () => el.removeEventListener('rackscroll', handler);
+  }, [viewMode, rackItems.length]);
+
+  // Keep rack element informed about shuffle state for wheel blocking
+  useEffect(() => {
+    if (rackRef.current) rackRef.current._shuffling = isShuffling;
+  }, [isShuffling]);
+
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100 p-6" style={{ paddingTop: 'calc(env(safe-area-inset-top) + 1.5rem)' }}>
+    <div className={`${viewMode === 'rack' ? 'h-screen overflow-hidden' : 'min-h-screen'} bg-zinc-950 text-zinc-100 p-6`} style={{ paddingTop: 'calc(env(safe-area-inset-top) + 1.5rem)' }}>
       <div className="fixed top-0 left-0 right-0 z-50 pointer-events-none bg-zinc-950" style={{ height: 'env(safe-area-inset-top)' }} />
       <header className="max-w-5xl mx-auto flex justify-between items-center mb-12">
         <h1 className="text-2xl font-black uppercase tracking-tighter flex items-center gap-2">
@@ -1186,7 +1206,7 @@ const App = () => {
         </div>
         ) : (
         /* Rack View */
-        <div className="flex flex-col items-center">
+        <div className="flex flex-col items-center" style={{ height: 'calc(100vh - 140px)' }}>
           {rackItems.length < 5 ? (
             <div className="py-20 text-center text-zinc-600">
               <Layers className="w-10 h-10 mx-auto mb-2 opacity-20" />
@@ -1196,17 +1216,25 @@ const App = () => {
           ) : (
             <>
               <div
-                ref={rackRef}
-                className="relative w-full max-w-sm overflow-hidden select-none"
-                style={{ perspective: '1000px', height: 'calc(100vh - 160px)' }}
-                onWheel={(e) => {
-                  if (isShuffling) return;
-                  e.preventDefault();
-                  setActiveIndex(prev => {
-                    if (e.deltaY > 0) return Math.min(prev + 1, rackItems.length - 1);
-                    return Math.max(prev - 1, 0);
-                  });
+                ref={(el) => {
+                  rackRef.current = el;
+                  // Attach non-passive wheel listener to allow preventDefault
+                  if (el && !el._wheelAttached) {
+                    el._wheelAttached = true;
+                    el.addEventListener('wheel', (e) => {
+                      e.preventDefault();
+                      if (el._shuffling) return;
+                      // Throttle wheel events
+                      if (el._wheelLock) return;
+                      el._wheelLock = true;
+                      setTimeout(() => { el._wheelLock = false; }, 120);
+                      el.dispatchEvent(new CustomEvent('rackscroll', { detail: { direction: e.deltaY > 0 ? 1 : -1 } }));
+                    }, { passive: false });
+                  }
                 }}
+                onRackscroll={undefined}
+                className="relative w-full max-w-sm select-none flex-1"
+                style={{ perspective: '800px', minHeight: 0 }}
                 onTouchStart={(e) => {
                   if (isShuffling) return;
                   rackRef.current._touchY = e.touches[0].clientY;
@@ -1223,29 +1251,38 @@ const App = () => {
                   }
                 }}
               >
-                <div className="absolute inset-0 flex items-center justify-center" style={{ transformStyle: 'preserve-3d' }}>
-                  {rackItems.map((item, index) => {
-                    const offset = index - activeIndex;
-                    if (Math.abs(offset) > 4) return null;
+                <div className="absolute inset-0 flex items-center justify-center">
+                  {/* Render far items first, center item last (painter's algorithm) */}
+                  {[...Array(9)].map((_, i) => {
+                    // Render from offset -4 to +4, but order: -4,-3,+4,+3,-2,+2,-1,+1,0
+                    const renderOrder = [-4, 4, -3, 3, -2, 2, -1, 1, 0];
+                    const offset = renderOrder[i];
+                    const index = activeIndex + offset;
+                    if (index < 0 || index >= rackItems.length) return null;
+                    const item = rackItems[index];
+                    const absOffset = Math.abs(offset);
 
-                    const rotateX = offset * -45;
-                    const translateZ = -Math.abs(offset) * 80;
-                    const translateY = offset * 100;
-                    const scale = 1 - Math.abs(offset) * 0.12;
-                    const opacity = 1 - Math.abs(offset) * 0.2;
+                    const translateY = offset * 75;
+                    const scale = 1 - absOffset * 0.1;
+                    const opacity = 1 - absOffset * 0.22;
+                    // Slight tilt for depth feel, but keep it subtle to avoid intersection
+                    const rotateX = offset * -12;
 
                     return (
                       <div
                         key={item.id}
-                        className="absolute w-64 h-64 overflow-hidden shadow-2xl"
+                        className="absolute overflow-hidden rounded-md"
                         style={{
-                          transform: `translateY(${translateY}px) translateZ(${translateZ}px) rotateX(${rotateX}deg) scale(${scale})`,
+                          width: '240px',
+                          height: '240px',
+                          transform: `translateY(${translateY}px) scale(${Math.max(scale, 0.4)}) rotateX(${rotateX}deg)`,
                           opacity: Math.max(opacity, 0),
-                          transition: 'transform 0.4s ease-out, opacity 0.4s ease-out',
-                          zIndex: 10 - Math.abs(offset),
+                          transition: isShuffling ? 'transform 0.15s linear, opacity 0.15s linear' : 'transform 0.35s ease-out, opacity 0.35s ease-out',
+                          boxShadow: absOffset === 0 ? '0 20px 60px rgba(0,0,0,0.7)' : '0 8px 24px rgba(0,0,0,0.4)',
+                          filter: absOffset > 0 ? `brightness(${1 - absOffset * 0.15})` : 'none',
                         }}
                       >
-                        <img src={item.coverUrl} className="w-full h-full object-cover" alt={item.title || item.name} />
+                        <img src={item.coverUrl} className="w-full h-full object-cover" alt={item.title || item.name} draggable={false} />
                       </div>
                     );
                   })}
@@ -1254,7 +1291,7 @@ const App = () => {
 
               {/* Info for active item */}
               {rackItems[activeIndex] && (
-                <div className="mt-4 text-center">
+                <div className="text-center py-3 flex-shrink-0">
                   <p className="text-lg font-bold">{rackItems[activeIndex].type === 'artist' ? rackItems[activeIndex].name : rackItems[activeIndex].title}</p>
                   <p className="text-sm text-zinc-400">{rackItems[activeIndex].type === 'artist' ? 'Discography' : rackItems[activeIndex].artist}</p>
                 </div>
@@ -1264,7 +1301,7 @@ const App = () => {
               <button
                 onClick={handleShuffle}
                 disabled={isShuffling}
-                className={`mt-6 flex items-center gap-2 px-6 py-3 rounded-full font-bold transition-all active:scale-95 ${
+                className={`mb-4 flex items-center gap-2 px-6 py-3 rounded-full font-bold transition-all active:scale-95 flex-shrink-0 ${
                   isShuffling
                     ? 'bg-zinc-700 text-zinc-400 cursor-not-allowed'
                     : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg'
