@@ -1260,15 +1260,20 @@ const App = () => {
                         height: 'min(220px, 55vw)',
                         transform: `rotateX(${-i * RACK_ANGLE_STEP}deg) translateZ(${RACK_RADIUS}px)`,
                         backfaceVisibility: 'hidden',
-                        clipPath: 'inset(0 round 8px)',
-                        boxShadow: '0 10px 40px rgba(0,0,0,0.6)',
                       }}
                     >
                       <img
                         src={item.coverUrl}
                         alt={item.title || item.name}
                         draggable={false}
-                        style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                        style={{
+                          width: '100%',
+                          height: '100%',
+                          objectFit: 'cover',
+                          display: 'block',
+                          borderRadius: '8px',
+                          boxShadow: '0 10px 40px rgba(0,0,0,0.6)',
+                        }}
                       />
                     </div>
                   ))}
