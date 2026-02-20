@@ -828,10 +828,6 @@ const App = () => {
     setShelf(prev => sortShelf([...prev, newItem]));
   };
 
-  // Rack constants — angle must be large enough that adjacent covers don't overlap
-  const RACK_ANGLE_STEP = 60;
-  const RACK_RADIUS = 450;
-
   const toggleListened = async (item) => {
     const newListened = !item.listened;
 
@@ -909,7 +905,7 @@ const App = () => {
       e.preventDefault();
       if (wheelLock) return;
       wheelLock = true;
-      setTimeout(() => { wheelLock = false; }, 100);
+      setTimeout(() => { wheelLock = false; }, 250);
       const dir = e.deltaY > 0 ? 1 : -1;
       setActiveIndex(prev => Math.max(0, Math.min(prev + dir, rackItems.length - 1)));
     };
@@ -1159,9 +1155,9 @@ const App = () => {
           )}
         </div>
         ) : (
-        /* Rack View — 3D cylinder drum */
+        /* Rack View — vertical coverflow */
         <div className="flex flex-col items-center flex-1 min-h-0">
-          {rackItems.length < 5 ? (
+          {rackItems.length < 3 ? (
             <div className="py-20 text-center text-zinc-600">
               <Layers className="w-10 h-10 mx-auto mb-2 opacity-20" />
               <p>Not enough covers for rack view.</p>
@@ -1169,11 +1165,10 @@ const App = () => {
             </div>
           ) : (
             <>
-              {/* Perspective wrapper — NO overflow-hidden (it flattens preserve-3d) */}
               <div
                 ref={rackRef}
                 className="relative flex-1 min-h-0 w-full select-none"
-                style={{ perspective: '1200px', perspectiveOrigin: '50% 50%' }}
+                style={{ perspective: '800px', perspectiveOrigin: '50% 50%' }}
                 onTouchStart={(e) => {
                   rackRef.current._touchY = e.touches[0].clientY;
                 }}
@@ -1189,24 +1184,44 @@ const App = () => {
                   }
                 }}
               >
-                {/* Rotating drum */}
-                <div
-                  className="absolute inset-0 flex items-center justify-center"
-                  style={{
-                    transformStyle: 'preserve-3d',
-                    transform: `translateZ(-${RACK_RADIUS}px) rotateX(${activeIndex * RACK_ANGLE_STEP}deg)`,
-                    transition: 'transform 0.6s cubic-bezier(0.23, 1, 0.36, 1)',
-                  }}
-                >
-                  {rackItems.map((item, i) => (
+                {rackItems.map((item, i) => {
+                  const offset = i - activeIndex;
+                  if (Math.abs(offset) > 6) return null;
+
+                  const absOffset = Math.abs(offset);
+                  const isActive = offset === 0;
+                  const sign = Math.sign(offset);
+
+                  // Vertical coverflow: center flat, above/below tilted and tightly stacked
+                  const TILT = 70;
+                  const GAP = 150;
+                  const STACK_SPACING = 38;
+
+                  let translateY, rotateX, translateZ;
+                  if (isActive) {
+                    translateY = 0;
+                    rotateX = 0;
+                    translateZ = 140;
+                  } else {
+                    translateY = sign * (GAP + (absOffset - 1) * STACK_SPACING);
+                    rotateX = sign * TILT;
+                    translateZ = 0;
+                  }
+
+                  const zIndex = 100 - absOffset;
+
+                  return (
                     <div
                       key={item.id}
-                      className="absolute"
+                      className="absolute left-1/2 top-1/2"
                       style={{
-                        width: 'min(280px, 70vw)',
-                        height: 'min(280px, 70vw)',
-                        transform: `rotateX(${-i * RACK_ANGLE_STEP}deg) translateZ(${RACK_RADIUS}px)`,
-                        backfaceVisibility: 'hidden',
+                        width: 'min(260px, 55vw)',
+                        height: 'min(260px, 55vw)',
+                        transform: `translate(-50%, -50%) translateY(${translateY}px) rotateX(${rotateX}deg) translateZ(${translateZ}px)`,
+                        zIndex,
+                        transition: 'transform 0.55s cubic-bezier(0.16, 1, 0.3, 1)',
+                        willChange: 'transform',
+                        pointerEvents: isActive ? 'auto' : 'none',
                       }}
                     >
                       <img
@@ -1218,20 +1233,23 @@ const App = () => {
                           height: '100%',
                           objectFit: 'cover',
                           display: 'block',
-                          borderRadius: '10px',
-                          boxShadow: '0 20px 60px rgba(0,0,0,0.7)',
+                          borderRadius: '4px',
+                          boxShadow: isActive
+                            ? '0 20px 60px rgba(0,0,0,0.9)'
+                            : '0 8px 24px rgba(0,0,0,0.6)',
                         }}
                       />
                     </div>
-                  ))}
-                </div>
+                  );
+                })}
+
               </div>
 
               {/* Active item info */}
               {rackItems[activeIndex] && (
-                <div className="flex-shrink-0 text-center pb-6">
-                  <p className="text-xl font-bold">{rackItems[activeIndex].type === 'artist' ? rackItems[activeIndex].name : rackItems[activeIndex].title}</p>
-                  <p className="text-sm text-zinc-400 mt-1">{rackItems[activeIndex].type === 'artist' ? 'Discography' : rackItems[activeIndex].artist}</p>
+                <div className="flex-shrink-0 text-center pb-5 pt-3 mx-auto px-6 py-2 rounded-xl backdrop-blur-md bg-zinc-900/60">
+                  <p className="text-lg font-bold">{rackItems[activeIndex].type === 'artist' ? rackItems[activeIndex].name : rackItems[activeIndex].title}</p>
+                  <p className="text-sm text-zinc-400 mt-0.5">{rackItems[activeIndex].type === 'artist' ? 'Discography' : rackItems[activeIndex].artist}</p>
                 </div>
               )}
             </>
