@@ -843,9 +843,8 @@ const App = () => {
   };
 
   // Rack constants — angle must be large enough that adjacent covers don't overlap
-  // At 40° on a 400px radius, vertical gap between adjacent items ≈ 257px
-  const RACK_ANGLE_STEP = 40;
-  const RACK_RADIUS = 400;
+  const RACK_ANGLE_STEP = 50;
+  const RACK_RADIUS = 350;
 
   // Rack shuffle — spins the drum multiple full turns then lands on target
   const handleShuffle = useCallback(() => {
@@ -1255,22 +1254,22 @@ const App = () => {
                   {rackItems.map((item, i) => (
                     <div
                       key={item.id}
-                      className="absolute overflow-hidden rounded-lg"
+                      className="absolute rounded-lg"
                       style={{
-                        width: '220px',
-                        height: '220px',
-                        aspectRatio: '1 / 1',
+                        width: 'min(220px, 55vw)',
+                        height: 'min(220px, 55vw)',
                         transform: `rotateX(${-i * RACK_ANGLE_STEP}deg) translateZ(${RACK_RADIUS}px)`,
                         backfaceVisibility: 'hidden',
+                        transformStyle: 'flat', // allows overflow clip inside preserve-3d parent
+                        overflow: 'hidden',
                         boxShadow: '0 10px 40px rgba(0,0,0,0.6)',
                       }}
                     >
                       <img
                         src={item.coverUrl}
-                        className="object-cover"
-                        style={{ width: '220px', height: '220px', display: 'block' }}
                         alt={item.title || item.name}
                         draggable={false}
+                        style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
                       />
                     </div>
                   ))}
