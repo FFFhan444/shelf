@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Disc, Plus, Trash2, X, Music4, Check, Circle, User, RefreshCw, Loader2, Star, Radio, ExternalLink, LayoutGrid, Layers, Shuffle } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Disc, Plus, Trash2, X, Music4, Check, Circle, User, RefreshCw, Loader2, Star, Radio, ExternalLink, LayoutGrid, Layers } from 'lucide-react';
 import { supabase } from './supabaseClient';
 
 // Map DB row (snake_case) to frontend object (camelCase)
@@ -102,7 +102,6 @@ const App = () => {
   const [searchMode, setSearchMode] = useState('music');
   const [viewMode, setViewMode] = useState('grid');
   const [activeIndex, setActiveIndex] = useState(0);
-  const [isShuffling, setIsShuffling] = useState(false);
 
   const [isLoaded, setIsLoaded] = useState(false);
   const [draggedItem, setDraggedItem] = useState(null);
@@ -846,40 +845,6 @@ const App = () => {
   const RACK_ANGLE_STEP = 50;
   const RACK_RADIUS = 350;
 
-  // Rack shuffle — spins the drum multiple full turns then lands on target
-  const handleShuffle = useCallback(() => {
-    const items = shelf.filter(i => i.coverUrl);
-    const unlistened = items.filter(i => !i.listened);
-    if (unlistened.length === 0 || isShuffling) return;
-
-    const targetItem = unlistened[Math.floor(Math.random() * unlistened.length)];
-    const targetIdx = items.indexOf(targetItem);
-    if (targetIdx === -1) return;
-
-    setIsShuffling(true);
-
-    // Spin: go forward by 2-3 full drum revolutions + distance to target
-    const fullRevItems = Math.ceil(360 / RACK_ANGLE_STEP);
-    const spins = (2 + Math.floor(Math.random() * 2)) * fullRevItems;
-    const overshootIdx = targetIdx + spins;
-
-    setActiveIndex(overshootIdx);
-
-    // After the spin transition completes, snap to real index and settle
-    setTimeout(() => {
-      // Briefly disable transition, snap to actual targetIdx + 1 (overshoot)
-      setActiveIndex(-1); // sentinel to trigger no-transition snap
-      requestAnimationFrame(() => {
-        setActiveIndex(targetIdx + 1 >= items.length ? 0 : targetIdx + 1);
-        // Then settle back to exact target
-        setTimeout(() => {
-          setActiveIndex(targetIdx);
-          setTimeout(() => setIsShuffling(false), 400);
-        }, 50);
-      });
-    }, 2200);
-  }, [shelf, isShuffling]);
-
   const toggleListened = async (item) => {
     const newListened = !item.listened;
 
@@ -952,12 +917,12 @@ const App = () => {
     if (viewMode !== 'rack') return;
     document.body.style.overflow = 'hidden';
 
+    let wheelLock = false;
     const onWheel = (e) => {
       e.preventDefault();
-      if (isShuffling) return;
-      if (rackRef.current?._wheelLock) return;
-      rackRef.current._wheelLock = true;
-      setTimeout(() => { if (rackRef.current) rackRef.current._wheelLock = false; }, 100);
+      if (wheelLock) return;
+      wheelLock = true;
+      setTimeout(() => { wheelLock = false; }, 100);
       const dir = e.deltaY > 0 ? 1 : -1;
       setActiveIndex(prev => Math.max(0, Math.min(prev + dir, rackItems.length - 1)));
     };
@@ -967,12 +932,12 @@ const App = () => {
       document.body.style.overflow = '';
       document.removeEventListener('wheel', onWheel);
     };
-  }, [viewMode, isShuffling, rackItems.length]);
+  }, [viewMode, rackItems.length]);
 
   return (
     <div className={`${viewMode === 'rack' ? 'h-[100dvh] overflow-hidden flex flex-col' : 'min-h-screen'} bg-zinc-950 text-zinc-100 p-6`} style={{ paddingTop: 'calc(env(safe-area-inset-top) + 1.5rem)' }}>
       <div className="fixed top-0 left-0 right-0 z-50 pointer-events-none bg-zinc-950" style={{ height: 'env(safe-area-inset-top)' }} />
-      <header className={`max-w-5xl mx-auto flex justify-between items-center ${viewMode === 'rack' ? 'mb-4 flex-shrink-0' : 'mb-12'}`}>
+      <header className="max-w-5xl mx-auto flex justify-between items-center mb-12 flex-shrink-0">
         <h1 className="text-2xl font-black uppercase tracking-tighter flex items-center gap-2">
           <span className="relative inline-flex items-center justify-center w-8 h-8 rounded-full bg-indigo-500"><span className="w-2 h-2 rounded-full bg-zinc-950" /></span> Shelf
         </h1>
@@ -1217,17 +1182,16 @@ const App = () => {
             </div>
           ) : (
             <>
-              {/* Perspective wrapper */}
+              {/* Perspective wrapper — NO overflow-hidden (it flattens preserve-3d) */}
               <div
                 ref={rackRef}
-                className="relative flex-1 min-h-0 w-full select-none overflow-hidden"
+                className="relative flex-1 min-h-0 w-full select-none"
                 style={{ perspective: '800px', perspectiveOrigin: '50% 50%' }}
                 onTouchStart={(e) => {
-                  if (isShuffling) return;
                   rackRef.current._touchY = e.touches[0].clientY;
                 }}
                 onTouchMove={(e) => {
-                  if (isShuffling || !rackRef.current?._touchY) return;
+                  if (!rackRef.current?._touchY) return;
                   const diff = rackRef.current._touchY - e.touches[0].clientY;
                   if (Math.abs(diff) > 30) {
                     setActiveIndex(prev => {
@@ -1238,17 +1202,13 @@ const App = () => {
                   }
                 }}
               >
-                {/* Rotating drum — the whole drum turns, items are fixed on its surface */}
+                {/* Rotating drum */}
                 <div
                   className="absolute inset-0 flex items-center justify-center"
                   style={{
                     transformStyle: 'preserve-3d',
                     transform: `translateZ(-${RACK_RADIUS}px) rotateX(${activeIndex * RACK_ANGLE_STEP}deg)`,
-                    transition: activeIndex === -1
-                      ? 'none'
-                      : isShuffling
-                        ? 'transform 2s cubic-bezier(0.2, 0.8, 0.3, 1)'
-                        : 'transform 0.5s cubic-bezier(0.23, 1, 0.32, 1)',
+                    transition: 'transform 0.5s cubic-bezier(0.23, 1, 0.32, 1)',
                   }}
                 >
                   {rackItems.map((item, i) => (
@@ -1280,34 +1240,13 @@ const App = () => {
                 </div>
               </div>
 
-              {/* Info + shuffle pinned to bottom */}
-              <div className="flex-shrink-0 flex flex-col items-center pb-2">
-                {rackItems[activeIndex >= 0 ? activeIndex % rackItems.length : 0] && (
-                  <div className="text-center mb-3">
-                    {(() => {
-                      const item = rackItems[activeIndex >= 0 ? activeIndex % rackItems.length : 0];
-                      return (
-                        <>
-                          <p className="text-lg font-bold">{item.type === 'artist' ? item.name : item.title}</p>
-                          <p className="text-sm text-zinc-400">{item.type === 'artist' ? 'Discography' : item.artist}</p>
-                        </>
-                      );
-                    })()}
-                  </div>
-                )}
-                <button
-                  onClick={handleShuffle}
-                  disabled={isShuffling}
-                  className={`flex items-center gap-2 px-6 py-3 rounded-full font-bold transition-all active:scale-95 ${
-                    isShuffling
-                      ? 'bg-zinc-700 text-zinc-400 cursor-not-allowed'
-                      : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg'
-                  }`}
-                >
-                  <Shuffle className={`w-5 h-5 ${isShuffling ? 'animate-spin' : ''}`} />
-                  {isShuffling ? 'Spinning...' : 'Shuffle'}
-                </button>
-              </div>
+              {/* Active item info */}
+              {rackItems[activeIndex] && (
+                <div className="flex-shrink-0 text-center pb-4">
+                  <p className="text-lg font-bold">{rackItems[activeIndex].type === 'artist' ? rackItems[activeIndex].name : rackItems[activeIndex].title}</p>
+                  <p className="text-sm text-zinc-400">{rackItems[activeIndex].type === 'artist' ? 'Discography' : rackItems[activeIndex].artist}</p>
+                </div>
+              )}
             </>
           )}
         </div>
