@@ -147,11 +147,11 @@ const App = () => {
           dismissSplash();
           return;
         }
-        const promises = Array.from(images).map(img =>
+        const promises = Array.from(images).slice(0, 8).map(img =>
           img.complete ? Promise.resolve() : new Promise(r => { img.onload = r; img.onerror = r; })
         );
         Promise.all(promises).then(dismissSplash);
-        setTimeout(dismissSplash, 8000);
+        setTimeout(dismissSplash, 3000);
       });
     });
   }, []);
@@ -1016,7 +1016,7 @@ const App = () => {
                     src={item.coverUrl}
                     className="w-full h-full object-cover transition-opacity duration-500"
                     alt={item.type === 'artist' ? item.name : item.title}
-                    style={{ opacity: 0 }}
+                    style={{ opacity: isFetching ? 0 : undefined }}
                     onLoad={(e) => { e.target.style.opacity = 1; }}
                   />
                 )}
