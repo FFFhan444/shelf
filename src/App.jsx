@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Disc, Plus, Trash2, X, Music4, Check, Circle, User, RefreshCw, Loader2, Star } from 'lucide-react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Disc, Plus, Trash2, X, Music4, Check, Circle, User, RefreshCw, Loader2, Star, Radio, ExternalLink, LayoutGrid, Layers, Shuffle } from 'lucide-react';
 import { supabase } from './supabaseClient';
 
 // Map DB row (snake_case) to frontend object (camelCase)
@@ -13,6 +13,7 @@ const fromDb = (row) => ({
   year: row.year,
   mbid: row.mbid,
   coverUrl: row.cover_url,
+  sourceUrl: row.source_url,
   releaseDate: row.release_date,
   addedAt: row.added_at,
   listened: row.listened ?? false,
@@ -31,6 +32,7 @@ const toDb = (item) => ({
   year: item.year || null,
   mbid: item.mbid || null,
   cover_url: item.coverUrl || null,
+  source_url: item.sourceUrl || null,
   release_date: item.releaseDate || null,
   added_at: item.addedAt,
   listened: item.listened ?? false,
@@ -96,6 +98,12 @@ const App = () => {
   const [isSearching, setIsSearching] = useState(false);
   const searchTimeoutRef = useRef(null);
 
+  const [fetchingArt, setFetchingArt] = useState(new Set());
+  const [searchMode, setSearchMode] = useState('music');
+  const [viewMode, setViewMode] = useState('grid');
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [isShuffling, setIsShuffling] = useState(false);
+
   const [isLoaded, setIsLoaded] = useState(false);
   const [draggedItem, setDraggedItem] = useState(null);
   const [dragOverIndex, setDragOverIndex] = useState(null);
@@ -103,6 +111,7 @@ const App = () => {
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   const dragTimeoutRef = useRef(null);
   const gridRef = useRef(null);
+  const rackRef = useRef(null);
 
   // Load shelf from Supabase on mount
   useEffect(() => {
@@ -253,8 +262,8 @@ const App = () => {
     handleDragEnd(e);
   };
 
-  // Fetch album artwork from Cover Art Archive
-  const fetchAlbumArtwork = async (artist, album, itemId) => {
+  // Helper: fetch cover from Cover Art Archive
+  const fetchCaaCover = async (artist, album) => {
     try {
       const res = await fetch(
         `https://musicbrainz.org/ws/2/release-group/?query=releasegroup:${encodeURIComponent(album)}%20AND%20artist:${encodeURIComponent(artist)}&fmt=json`,
@@ -262,34 +271,91 @@ const App = () => {
       );
       const data = await res.json();
       const rgId = data['release-groups']?.[0]?.id;
-
       if (rgId) {
         const caaUrl = `https://coverartarchive.org/release-group/${rgId}/front-500`;
         const head = await fetch(caaUrl, { method: 'HEAD' });
+        if (head.ok) return caaUrl;
+      }
+    } catch (e) {
+      console.warn('CAA fetch failed', e);
+    }
+    return null;
+  };
 
-        if (head.ok) {
-          // Update in Supabase
-          const { error } = await supabase
-            .from('items')
-            .update({ cover_url: caaUrl })
-            .eq('id', itemId);
-          if (error) console.error('Failed to update cover:', error);
-
-          setShelf(prev => {
-            const updated = prev.map(item =>
-              item.id === itemId ? { ...item, coverUrl: caaUrl } : item
-            );
-            return sortShelf(updated);
-          });
+  // Helper: fetch cover from iTunes Search API
+  const fetchItunesCover = async (artist, album) => {
+    try {
+      const res = await fetch(
+        `https://itunes.apple.com/search?term=${encodeURIComponent(artist + ' ' + album)}&media=music&entity=album&limit=3`
+      );
+      const data = await res.json();
+      if (data.results?.length) {
+        // Try to find best match by comparing names
+        const query = (artist + ' ' + album).toLowerCase();
+        const best = data.results.find(r =>
+          query.includes(r.artistName?.toLowerCase()) || query.includes(r.collectionName?.toLowerCase())
+        ) || data.results[0];
+        if (best.artworkUrl100) {
+          return best.artworkUrl100.replace('100x100', '600x600');
         }
       }
     } catch (e) {
+      console.warn('iTunes fetch failed', e);
+    }
+    return null;
+  };
+
+  // Helper: fetch cover from Bandcamp (via CORS proxy)
+  const fetchBandcampCover = async (artist, album) => {
+    try {
+      const query = encodeURIComponent(artist + ' ' + album);
+      const proxyUrl = `https://corsproxy.io/?url=${encodeURIComponent(`https://bandcamp.com/search?q=${query}&item_type=a`)}`;
+      const res = await fetch(proxyUrl);
+      const html = await res.text();
+      const match = html.match(/<img[^>]+class="art"[^>]+src="([^"]+)"/);
+      if (match?.[1]) return match[1];
+    } catch (e) {
+      console.warn('Bandcamp fetch failed (CORS proxy may be down)', e);
+    }
+    return null;
+  };
+
+  // Fetch album artwork with fallback chain: CAA → iTunes → Bandcamp
+  const fetchAlbumArtwork = async (artist, album, itemId) => {
+    setFetchingArt(prev => new Set(prev).add(itemId));
+    try {
+      const coverUrl = await fetchCaaCover(artist, album)
+        || await fetchItunesCover(artist, album)
+        || await fetchBandcampCover(artist, album);
+
+      if (coverUrl) {
+        const { error } = await supabase
+          .from('items')
+          .update({ cover_url: coverUrl })
+          .eq('id', itemId);
+        if (error) console.error('Failed to update cover:', error);
+
+        setShelf(prev => {
+          const updated = prev.map(item =>
+            item.id === itemId ? { ...item, coverUrl } : item
+          );
+          return sortShelf(updated);
+        });
+      }
+    } catch (e) {
       console.warn("Album art fetch failed", e);
+    } finally {
+      setFetchingArt(prev => {
+        const next = new Set(prev);
+        next.delete(itemId);
+        return next;
+      });
     }
   };
 
   // Fetch artist image from multiple sources
   const fetchArtistImage = async (artistName, mbid, itemId) => {
+    setFetchingArt(prev => new Set(prev).add(itemId));
     try {
       // If no MBID provided, search MusicBrainz first to get one
       let artistMbid = mbid;
@@ -401,6 +467,12 @@ const App = () => {
       }
     } catch (e) {
       console.warn("Artist image fetch failed", e);
+    } finally {
+      setFetchingArt(prev => {
+        const next = new Set(prev);
+        next.delete(itemId);
+        return next;
+      });
     }
   };
 
@@ -664,16 +736,149 @@ const App = () => {
     setIsSearchOpen(false);
     setManualInput('');
     setSearchResults([]);
+    setSearchMode('music');
   };
 
   const selectSearchResult = (result) => {
     closeSearch();
     if (result.type === 'album') {
       addAlbum(result);
+    } else if (result.type === 'mix') {
+      addMix(result);
     } else {
       addArtist(result);
     }
   };
+
+  // SoundCloud: detect URL and fetch via oEmbed
+  const fetchSoundCloudOembed = async (url) => {
+    try {
+      const res = await fetch(`https://soundcloud.com/oembed?format=json&url=${encodeURIComponent(url)}`);
+      if (!res.ok) return null;
+      const data = await res.json();
+      return {
+        type: 'mix',
+        title: data.title || 'Untitled Mix',
+        artist: data.author_name || 'Unknown',
+        coverUrl: data.thumbnail_url || null,
+        sourceUrl: url,
+      };
+    } catch (e) {
+      console.warn('SoundCloud oEmbed failed', e);
+      return null;
+    }
+  };
+
+  // SoundCloud search
+  const handleSoundCloudSearch = async (val) => {
+    setManualInput(val);
+    if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+    if (val.length < 2) { setSearchResults([]); return; }
+
+    // If it's a SoundCloud URL, fetch via oEmbed immediately
+    if (val.includes('soundcloud.com/')) {
+      setIsSearching(true);
+      const result = await fetchSoundCloudOembed(val.trim());
+      setSearchResults(result ? [result] : []);
+      setIsSearching(false);
+      return;
+    }
+
+    searchTimeoutRef.current = setTimeout(async () => {
+      setIsSearching(true);
+      try {
+        const clientId = import.meta.env.VITE_SOUNDCLOUD_CLIENT_ID;
+        if (!clientId) {
+          setSearchResults([{ type: 'hint', message: 'Paste a SoundCloud URL directly to add a mix' }]);
+          setIsSearching(false);
+          return;
+        }
+        const res = await fetch(
+          `https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(val)}&limit=5&client_id=${clientId}`
+        );
+        if (!res.ok) {
+          setSearchResults([{ type: 'hint', message: 'Search unavailable — paste a direct SoundCloud URL instead' }]);
+          setIsSearching(false);
+          return;
+        }
+        const data = await res.json();
+        const results = (data.collection || []).map(track => ({
+          type: 'mix',
+          title: track.title,
+          artist: track.user?.username || 'Unknown',
+          coverUrl: track.artwork_url?.replace('large', 't500x500') || null,
+          sourceUrl: track.permalink_url,
+          duration: track.duration,
+        }));
+        setSearchResults(results);
+      } catch (e) {
+        console.error('SoundCloud search failed:', e);
+        setSearchResults([{ type: 'hint', message: 'Search failed — paste a direct SoundCloud URL instead' }]);
+      }
+      setIsSearching(false);
+    }, 300);
+  };
+
+  // Add a SoundCloud mix to the shelf
+  const addMix = async (mix) => {
+    const newItem = {
+      id: crypto.randomUUID(),
+      type: 'mix',
+      title: mix.title,
+      artist: mix.artist,
+      coverUrl: mix.coverUrl || null,
+      sourceUrl: mix.sourceUrl,
+      addedAt: new Date().toISOString(),
+      listened: false,
+    };
+
+    try {
+      const { error } = await supabase.from('items').insert(toDb(newItem));
+      if (error) console.error('Failed to save mix:', error);
+    } catch (e) {
+      console.error('Failed to save mix:', e);
+    }
+
+    setShelf(prev => sortShelf([...prev, newItem]));
+  };
+
+  // Rack shuffle (slot-machine animation)
+  const handleShuffle = useCallback(() => {
+    const rackItems = shelf.filter(i => i.coverUrl);
+    const unlistened = rackItems.filter(i => !i.listened);
+    if (unlistened.length === 0 || isShuffling) return;
+
+    const targetItem = unlistened[Math.floor(Math.random() * unlistened.length)];
+    const targetIdx = rackItems.indexOf(targetItem);
+    if (targetIdx === -1) return;
+
+    setIsShuffling(true);
+    const totalTicks = 40 + Math.floor(Math.random() * 20);
+    let tick = 0;
+    let delay = 50;
+
+    const advance = () => {
+      tick++;
+      setActiveIndex(prev => (prev + 1) % rackItems.length);
+
+      if (tick >= totalTicks) {
+        // Overshoot by 1, then settle back
+        setTimeout(() => {
+          setActiveIndex(targetIdx + 1 < rackItems.length ? targetIdx + 1 : 0);
+          setTimeout(() => {
+            setActiveIndex(targetIdx);
+            setIsShuffling(false);
+          }, 300);
+        }, delay);
+        return;
+      }
+
+      delay *= 1.08;
+      setTimeout(advance, delay);
+    };
+
+    setTimeout(advance, delay);
+  }, [shelf, isShuffling]);
 
   const toggleListened = async (item) => {
     const newListened = !item.listened;
@@ -739,6 +944,9 @@ const App = () => {
     return `${item.artist} — ${item.title} — `;
   };
 
+  // Items with covers for rack view
+  const rackItems = shelf.filter(i => i.coverUrl);
+
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 p-6" style={{ paddingTop: 'calc(env(safe-area-inset-top) + 1.5rem)' }}>
       <div className="fixed top-0 left-0 right-0 z-50 pointer-events-none bg-zinc-950" style={{ height: 'env(safe-area-inset-top)' }} />
@@ -746,18 +954,29 @@ const App = () => {
         <h1 className="text-2xl font-black uppercase tracking-tighter flex items-center gap-2">
           <span className="relative inline-flex items-center justify-center w-8 h-8 rounded-full bg-indigo-500"><span className="w-2 h-2 rounded-full bg-zinc-950" /></span> Shelf
         </h1>
-        <button
-          onClick={() => setIsSearchOpen(true)}
-          className="bg-indigo-600 hover:bg-indigo-500 p-3 rounded-full shadow-lg transition-transform active:scale-95"
-        >
-          <Plus className="w-6 h-6" />
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setViewMode(v => v === 'grid' ? 'rack' : 'grid')}
+            className="p-3 rounded-full bg-zinc-800 hover:bg-zinc-700 transition-colors active:scale-95"
+            title={viewMode === 'grid' ? 'Switch to rack view' : 'Switch to grid view'}
+          >
+            {viewMode === 'grid' ? <Layers className="w-5 h-5" /> : <LayoutGrid className="w-5 h-5" />}
+          </button>
+          <button
+            onClick={() => setIsSearchOpen(true)}
+            className="bg-indigo-600 hover:bg-indigo-500 p-3 rounded-full shadow-lg transition-transform active:scale-95"
+          >
+            <Plus className="w-6 h-6" />
+          </button>
+        </div>
       </header>
 
       <main className="max-w-5xl mx-auto">
+        {viewMode === 'grid' ? (
         <div ref={gridRef} className="relative grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-6">
           {shelf.map((item, index) => {
             const isDragging = draggedItem?.item.id === item.id;
+            const isFetching = fetchingArt.has(item.id);
 
             return (
             <div
@@ -797,9 +1016,24 @@ const App = () => {
                   );
                 })()}
 
-                {item.coverUrl ? (
-                  <img src={item.coverUrl} className="w-full h-full object-cover" alt={item.type === 'artist' ? item.name : item.title} />
-                ) : (
+                {/* Shimmer loading state */}
+                {!item.coverUrl && isFetching && (
+                  <div className="absolute inset-0 art-loading z-10" />
+                )}
+
+                {/* Cover image with cross-fade */}
+                {item.coverUrl && (
+                  <img
+                    src={item.coverUrl}
+                    className="w-full h-full object-cover transition-opacity duration-500"
+                    alt={item.type === 'artist' ? item.name : item.title}
+                    style={{ opacity: 0 }}
+                    onLoad={(e) => { e.target.style.opacity = 1; }}
+                  />
+                )}
+
+                {/* Placeholder (only when not fetching and no cover) */}
+                {!item.coverUrl && !isFetching && (
                   <div className="w-full h-full flex flex-col items-center justify-center p-4 text-center bg-gradient-to-br from-zinc-800 to-zinc-900">
                     {item.type === 'artist' ? (
                       <>
@@ -808,6 +1042,12 @@ const App = () => {
                         {item.disambiguation && (
                           <p className="text-[10px] opacity-50 italic line-clamp-1">{item.disambiguation}</p>
                         )}
+                      </>
+                    ) : item.type === 'mix' ? (
+                      <>
+                        <Radio className="w-8 h-8 text-zinc-600 mb-2" />
+                        <p className="text-xs font-bold line-clamp-2">{item.artist}</p>
+                        <p className="text-[10px] opacity-50 italic line-clamp-1">{item.title}</p>
                       </>
                     ) : (
                       <>
@@ -862,7 +1102,18 @@ const App = () => {
                   >
                     <Star className={`w-5 h-5 ${item.listenAgain ? 'text-white' : 'text-zinc-300'}`} strokeWidth={2} />
                   </button>
-                  {!item.coverUrl && (
+                  {item.type === 'mix' && item.sourceUrl && (
+                    <a
+                      href={item.sourceUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="p-2 bg-zinc-800/80 rounded-full hover:bg-orange-600 transition-all duration-200 active:scale-90"
+                      title="Open in SoundCloud"
+                    >
+                      <ExternalLink className="w-5 h-5 text-zinc-300" />
+                    </a>
+                  )}
+                  {!item.coverUrl && item.type !== 'mix' && (
                     <button
                       onClick={() => {
                         if (item.type === 'artist') {
@@ -933,24 +1184,140 @@ const App = () => {
             </div>
           )}
         </div>
+        ) : (
+        /* Rack View */
+        <div className="flex flex-col items-center">
+          {rackItems.length < 5 ? (
+            <div className="py-20 text-center text-zinc-600">
+              <Layers className="w-10 h-10 mx-auto mb-2 opacity-20" />
+              <p>Not enough covers for rack view.</p>
+              <p className="text-sm mt-1 opacity-60">Add more albums with artwork, or switch to grid view</p>
+            </div>
+          ) : (
+            <>
+              <div
+                ref={rackRef}
+                className="relative w-full max-w-sm overflow-hidden select-none"
+                style={{ perspective: '1000px', height: 'calc(100vh - 160px)' }}
+                onWheel={(e) => {
+                  if (isShuffling) return;
+                  e.preventDefault();
+                  setActiveIndex(prev => {
+                    if (e.deltaY > 0) return Math.min(prev + 1, rackItems.length - 1);
+                    return Math.max(prev - 1, 0);
+                  });
+                }}
+                onTouchStart={(e) => {
+                  if (isShuffling) return;
+                  rackRef.current._touchY = e.touches[0].clientY;
+                }}
+                onTouchMove={(e) => {
+                  if (isShuffling || !rackRef.current._touchY) return;
+                  const diff = rackRef.current._touchY - e.touches[0].clientY;
+                  if (Math.abs(diff) > 40) {
+                    setActiveIndex(prev => {
+                      if (diff > 0) return Math.min(prev + 1, rackItems.length - 1);
+                      return Math.max(prev - 1, 0);
+                    });
+                    rackRef.current._touchY = e.touches[0].clientY;
+                  }
+                }}
+              >
+                <div className="absolute inset-0 flex items-center justify-center" style={{ transformStyle: 'preserve-3d' }}>
+                  {rackItems.map((item, index) => {
+                    const offset = index - activeIndex;
+                    if (Math.abs(offset) > 4) return null;
+
+                    const rotateX = offset * -45;
+                    const translateZ = -Math.abs(offset) * 80;
+                    const translateY = offset * 100;
+                    const scale = 1 - Math.abs(offset) * 0.12;
+                    const opacity = 1 - Math.abs(offset) * 0.2;
+
+                    return (
+                      <div
+                        key={item.id}
+                        className="absolute w-64 h-64 overflow-hidden shadow-2xl"
+                        style={{
+                          transform: `translateY(${translateY}px) translateZ(${translateZ}px) rotateX(${rotateX}deg) scale(${scale})`,
+                          opacity: Math.max(opacity, 0),
+                          transition: 'transform 0.4s ease-out, opacity 0.4s ease-out',
+                          zIndex: 10 - Math.abs(offset),
+                        }}
+                      >
+                        <img src={item.coverUrl} className="w-full h-full object-cover" alt={item.title || item.name} />
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Info for active item */}
+              {rackItems[activeIndex] && (
+                <div className="mt-4 text-center">
+                  <p className="text-lg font-bold">{rackItems[activeIndex].type === 'artist' ? rackItems[activeIndex].name : rackItems[activeIndex].title}</p>
+                  <p className="text-sm text-zinc-400">{rackItems[activeIndex].type === 'artist' ? 'Discography' : rackItems[activeIndex].artist}</p>
+                </div>
+              )}
+
+              {/* Shuffle button */}
+              <button
+                onClick={handleShuffle}
+                disabled={isShuffling}
+                className={`mt-6 flex items-center gap-2 px-6 py-3 rounded-full font-bold transition-all active:scale-95 ${
+                  isShuffling
+                    ? 'bg-zinc-700 text-zinc-400 cursor-not-allowed'
+                    : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg'
+                }`}
+              >
+                <Shuffle className={`w-5 h-5 ${isShuffling ? 'animate-spin' : ''}`} />
+                {isShuffling ? 'Spinning...' : 'Shuffle'}
+              </button>
+            </>
+          )}
+        </div>
+        )}
       </main>
 
       {/* Search Modal */}
       {isSearchOpen && (
         <div className="fixed inset-0 z-50 bg-zinc-950/95 flex items-start justify-center p-6 pt-24 animate-fade-in" onClick={(e) => { if (e.target === e.currentTarget) closeSearch(); }}>
           <div className="w-full max-w-xl">
+              {/* Mode Toggle */}
+              <div className="flex gap-2 mb-3">
+                <button
+                  onClick={() => { setSearchMode('music'); setSearchResults([]); setManualInput(''); }}
+                  className={`px-4 py-1.5 rounded-full text-sm font-bold transition-colors ${
+                    searchMode === 'music' ? 'bg-indigo-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'
+                  }`}
+                >
+                  Music
+                </button>
+                <button
+                  onClick={() => { setSearchMode('soundcloud'); setSearchResults([]); setManualInput(''); }}
+                  className={`px-4 py-1.5 rounded-full text-sm font-bold transition-colors ${
+                    searchMode === 'soundcloud' ? 'bg-orange-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'
+                  }`}
+                >
+                  SoundCloud
+                </button>
+              </div>
+
               <textarea
                 autoFocus
-                rows={manualInput.includes('\n') ? 6 : 1}
-                placeholder="Search for artist or album"
+                rows={searchMode === 'music' && manualInput.includes('\n') ? 6 : 1}
+                placeholder={searchMode === 'music' ? 'Search for artist or album' : 'Paste SoundCloud URL or search mixes'}
                 className="w-full bg-zinc-900 border border-white/10 rounded-xl p-4 text-lg focus:ring-2 ring-indigo-500 outline-none resize-none"
                 value={manualInput}
-                onChange={(e) => handleSearch(e.target.value)}
+                onChange={(e) => searchMode === 'music' ? handleSearch(e.target.value) : handleSoundCloudSearch(e.target.value)}
                 onKeyDown={(e) => {
-                  // Enter submits, Shift+Enter for new line
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
-                    addManualEntry();
+                    if (searchMode === 'music') {
+                      addManualEntry();
+                    } else if (searchResults.length === 1 && searchResults[0].type === 'mix') {
+                      selectSearchResult(searchResults[0]);
+                    }
                   }
                 }}
               />
@@ -964,7 +1331,17 @@ const App = () => {
                   </div>
                 )}
 
-                {!isSearching && searchResults.map((r, i) => (
+                {!isSearching && searchResults.map((r, i) => {
+                  // Hint message (e.g. when SoundCloud search is unavailable)
+                  if (r.type === 'hint') {
+                    return (
+                      <div key={i} className="p-3 text-sm text-zinc-500 text-center">
+                        {r.message}
+                      </div>
+                    );
+                  }
+
+                  return (
                   <button
                     key={i}
                     onClick={() => selectSearchResult(r)}
@@ -976,6 +1353,17 @@ const App = () => {
                         <div className="min-w-0">
                           <p className="font-medium truncate group-hover:text-white">{r.title}</p>
                           <p className="text-sm text-zinc-500 truncate group-hover:text-indigo-200">{r.artist}{r.year && ` • ${r.year}`}</p>
+                        </div>
+                      </>
+                    ) : r.type === 'mix' ? (
+                      <>
+                        <Radio className="w-5 h-5 text-orange-500 group-hover:text-white flex-shrink-0" />
+                        <div className="min-w-0">
+                          <p className="font-medium truncate group-hover:text-white">{r.title}</p>
+                          <p className="text-sm text-zinc-500 truncate group-hover:text-indigo-200">
+                            {r.artist}
+                            {r.duration && ` • ${Math.floor(r.duration / 60000)}min`}
+                          </p>
                         </div>
                       </>
                     ) : (
@@ -990,7 +1378,8 @@ const App = () => {
                       </>
                     )}
                   </button>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
