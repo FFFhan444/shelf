@@ -945,8 +945,8 @@ const App = () => {
     return `${item.artist} — ${item.title} — `;
   };
 
-  // Items with covers for rack view
-  const rackItems = shelf.filter(i => i.coverUrl);
+  // Items with covers for rack view — only unlistened or starred to listen again
+  const rackItems = shelf.filter(i => i.coverUrl && (!i.listened || i.listenAgain));
 
   // Lock body scroll and capture wheel globally in rack mode
   useEffect(() => {
@@ -1259,12 +1259,19 @@ const App = () => {
                       style={{
                         width: '220px',
                         height: '220px',
+                        aspectRatio: '1 / 1',
                         transform: `rotateX(${-i * RACK_ANGLE_STEP}deg) translateZ(${RACK_RADIUS}px)`,
                         backfaceVisibility: 'hidden',
                         boxShadow: '0 10px 40px rgba(0,0,0,0.6)',
                       }}
                     >
-                      <img src={item.coverUrl} className="w-full h-full object-cover" alt={item.title || item.name} draggable={false} />
+                      <img
+                        src={item.coverUrl}
+                        className="object-cover"
+                        style={{ width: '220px', height: '220px', display: 'block' }}
+                        alt={item.title || item.name}
+                        draggable={false}
+                      />
                     </div>
                   ))}
                 </div>
