@@ -140,7 +140,6 @@ const App = () => {
       }
     };
     loadItems().then(dismissSplash);
-    // Failsafe: always dismiss after 2s even if Supabase hangs
     setTimeout(dismissSplash, 2000);
   }, []);
 
@@ -830,10 +829,8 @@ const App = () => {
   };
 
   // Rack constants — angle must be large enough that adjacent covers don't overlap
-  // Dynamic angle step: ensure all items fit on the cylinder without repeating
-  // Clamp between 10° (many items) and 30° (few items)
-  const RACK_ANGLE_STEP = Math.max(10, Math.min(30, 360 / Math.max(rackItems.length, 1)));
-  const RACK_RADIUS = 300;
+  const RACK_ANGLE_STEP = 60;
+  const RACK_RADIUS = 450;
 
   const toggleListened = async (item) => {
     const newListened = !item.listened;
