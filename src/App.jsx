@@ -842,8 +842,8 @@ const App = () => {
   };
 
   // Rack constants — angle must be large enough that adjacent covers don't overlap
-  const RACK_ANGLE_STEP = 60;
-  const RACK_RADIUS = 450;
+  const RACK_ANGLE_STEP = 40;
+  const RACK_RADIUS = 380;
 
   const toggleListened = async (item) => {
     const newListened = !item.listened;
