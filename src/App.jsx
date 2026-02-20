@@ -842,8 +842,8 @@ const App = () => {
   };
 
   // Rack constants — angle must be large enough that adjacent covers don't overlap
-  const RACK_ANGLE_STEP = 50;
-  const RACK_RADIUS = 350;
+  const RACK_ANGLE_STEP = 60;
+  const RACK_RADIUS = 450;
 
   const toggleListened = async (item) => {
     const newListened = !item.listened;
@@ -1186,7 +1186,7 @@ const App = () => {
               <div
                 ref={rackRef}
                 className="relative flex-1 min-h-0 w-full select-none"
-                style={{ perspective: '800px', perspectiveOrigin: '50% 50%' }}
+                style={{ perspective: '1200px', perspectiveOrigin: '50% 50%' }}
                 onTouchStart={(e) => {
                   rackRef.current._touchY = e.touches[0].clientY;
                 }}
@@ -1208,7 +1208,7 @@ const App = () => {
                   style={{
                     transformStyle: 'preserve-3d',
                     transform: `translateZ(-${RACK_RADIUS}px) rotateX(${activeIndex * RACK_ANGLE_STEP}deg)`,
-                    transition: 'transform 0.5s cubic-bezier(0.23, 1, 0.32, 1)',
+                    transition: 'transform 0.6s cubic-bezier(0.23, 1, 0.36, 1)',
                   }}
                 >
                   {rackItems.map((item, i) => (
@@ -1216,8 +1216,8 @@ const App = () => {
                       key={item.id}
                       className="absolute"
                       style={{
-                        width: 'min(220px, 55vw)',
-                        height: 'min(220px, 55vw)',
+                        width: 'min(280px, 70vw)',
+                        height: 'min(280px, 70vw)',
                         transform: `rotateX(${-i * RACK_ANGLE_STEP}deg) translateZ(${RACK_RADIUS}px)`,
                         backfaceVisibility: 'hidden',
                       }}
@@ -1231,8 +1231,8 @@ const App = () => {
                           height: '100%',
                           objectFit: 'cover',
                           display: 'block',
-                          borderRadius: '8px',
-                          boxShadow: '0 10px 40px rgba(0,0,0,0.6)',
+                          borderRadius: '10px',
+                          boxShadow: '0 20px 60px rgba(0,0,0,0.7)',
                         }}
                       />
                     </div>
@@ -1242,9 +1242,9 @@ const App = () => {
 
               {/* Active item info */}
               {rackItems[activeIndex] && (
-                <div className="flex-shrink-0 text-center pb-4">
-                  <p className="text-lg font-bold">{rackItems[activeIndex].type === 'artist' ? rackItems[activeIndex].name : rackItems[activeIndex].title}</p>
-                  <p className="text-sm text-zinc-400">{rackItems[activeIndex].type === 'artist' ? 'Discography' : rackItems[activeIndex].artist}</p>
+                <div className="flex-shrink-0 text-center pb-6">
+                  <p className="text-xl font-bold">{rackItems[activeIndex].type === 'artist' ? rackItems[activeIndex].name : rackItems[activeIndex].title}</p>
+                  <p className="text-sm text-zinc-400 mt-1">{rackItems[activeIndex].type === 'artist' ? 'Discography' : rackItems[activeIndex].artist}</p>
                 </div>
               )}
             </>
