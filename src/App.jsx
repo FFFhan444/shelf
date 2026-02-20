@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Disc, Plus, Trash2, X, Music4, Check, Circle, User, RefreshCw, Loader2, Star, Radio, ExternalLink, LayoutGrid, Layers } from 'lucide-react';
 import { supabase } from './supabaseClient';
 
@@ -895,27 +895,88 @@ const App = () => {
   // Items with covers for rack view — only unlistened or starred to listen again
   const rackItems = shelf.filter(i => i.coverUrl && (!i.listened || i.listenAgain));
 
-  // Lock body scroll and capture wheel globally in rack mode
+  // Physics-based scroll for rack mode
+  const scrollPos = useRef(0); // continuous float position
+  const scrollVel = useRef(0); // velocity
+  const rafId = useRef(null);
+  const lastWheel = useRef(0);
+
+  // Sync activeIndex from scrollPos (nearest integer)
+  const updateActiveFromScroll = useCallback(() => {
+    const snapped = Math.round(scrollPos.current);
+    setActiveIndex(snapped);
+  }, []);
+
+  // Animation loop: apply velocity, friction, and snap
+  const animateScroll = useCallback(() => {
+    const maxIdx = rackItems.length - 1;
+    const FRICTION = 0.92;
+    const SNAP_STRENGTH = 0.08;
+    const STOP_THRESHOLD = 0.001;
+
+    // Apply friction
+    scrollVel.current *= FRICTION;
+
+    // Snap toward nearest integer when velocity is low
+    const nearest = Math.round(scrollPos.current);
+    const snapForce = (nearest - scrollPos.current) * SNAP_STRENGTH;
+    scrollVel.current += snapForce;
+
+    // Update position
+    scrollPos.current += scrollVel.current;
+
+    // Clamp to bounds with rubber band
+    if (scrollPos.current < 0) {
+      scrollPos.current *= 0.8;
+      scrollVel.current *= 0.5;
+    } else if (scrollPos.current > maxIdx) {
+      scrollPos.current = maxIdx + (scrollPos.current - maxIdx) * 0.8;
+      scrollVel.current *= 0.5;
+    }
+
+    updateActiveFromScroll();
+
+    // Keep animating if still moving
+    if (Math.abs(scrollVel.current) > STOP_THRESHOLD || Math.abs(scrollPos.current - nearest) > STOP_THRESHOLD) {
+      rafId.current = requestAnimationFrame(animateScroll);
+    } else {
+      // Settle exactly on snap point
+      scrollPos.current = Math.max(0, Math.min(maxIdx, nearest));
+      updateActiveFromScroll();
+      rafId.current = null;
+    }
+  }, [rackItems.length, updateActiveFromScroll]);
+
+  const kickScroll = useCallback((delta) => {
+    scrollVel.current += delta;
+    if (!rafId.current) {
+      rafId.current = requestAnimationFrame(animateScroll);
+    }
+  }, [animateScroll]);
+
   useEffect(() => {
     if (viewMode !== 'rack') return;
     document.body.style.overflow = 'hidden';
 
-    let wheelLock = false;
     const onWheel = (e) => {
       e.preventDefault();
-      if (wheelLock) return;
-      wheelLock = true;
-      setTimeout(() => { wheelLock = false; }, 250);
-      const dir = e.deltaY > 0 ? 1 : -1;
-      setActiveIndex(prev => Math.max(0, Math.min(prev + dir, rackItems.length - 1)));
+      // Normalize wheel delta to a small impulse
+      const now = Date.now();
+      const impulse = Math.sign(e.deltaY) * Math.min(Math.abs(e.deltaY) / 120, 1.5) * 0.6;
+      // Throttle rapid ticks slightly
+      if (now - lastWheel.current > 30) {
+        kickScroll(impulse);
+        lastWheel.current = now;
+      }
     };
 
     document.addEventListener('wheel', onWheel, { passive: false });
     return () => {
       document.body.style.overflow = '';
       document.removeEventListener('wheel', onWheel);
+      if (rafId.current) cancelAnimationFrame(rafId.current);
     };
-  }, [viewMode, rackItems.length]);
+  }, [viewMode, kickScroll]);
 
   return (
     <div className={`${viewMode === 'rack' ? 'h-[100dvh] flex flex-col' : 'min-h-screen'} bg-zinc-950 text-zinc-100 p-6`} style={{ paddingTop: 'calc(env(safe-area-inset-top) + 1.5rem)' }}>
@@ -1171,44 +1232,48 @@ const App = () => {
                 style={{ perspective: '800px', perspectiveOrigin: '50% 50%' }}
                 onTouchStart={(e) => {
                   rackRef.current._touchY = e.touches[0].clientY;
+                  rackRef.current._touchTime = Date.now();
+                  scrollVel.current = 0; // stop any momentum
                 }}
                 onTouchMove={(e) => {
                   if (!rackRef.current?._touchY) return;
-                  const diff = rackRef.current._touchY - e.touches[0].clientY;
-                  if (Math.abs(diff) > 30) {
-                    setActiveIndex(prev => {
-                      if (diff > 0) return Math.min(prev + 1, rackItems.length - 1);
-                      return Math.max(prev - 1, 0);
-                    });
-                    rackRef.current._touchY = e.touches[0].clientY;
-                  }
+                  const currentY = e.touches[0].clientY;
+                  const diff = rackRef.current._touchY - currentY;
+                  // Directly drag the position (1px drag = 0.006 index units)
+                  scrollPos.current += diff * 0.006;
+                  scrollPos.current = Math.max(-0.3, Math.min(rackItems.length - 0.7, scrollPos.current));
+                  updateActiveFromScroll();
+                  rackRef.current._lastDiff = diff;
+                  rackRef.current._touchY = currentY;
+                  rackRef.current._touchTime = Date.now();
+                }}
+                onTouchEnd={() => {
+                  // Flick: carry momentum from last touch move
+                  const flick = (rackRef.current._lastDiff || 0) * 0.04;
+                  kickScroll(flick);
+                  rackRef.current._lastDiff = 0;
                 }}
               >
                 {rackItems.map((item, i) => {
-                  const offset = i - activeIndex;
+                  const offset = i - scrollPos.current;
                   if (Math.abs(offset) > 6) return null;
 
                   const absOffset = Math.abs(offset);
-                  const isActive = offset === 0;
                   const sign = Math.sign(offset);
 
-                  // Vertical coverflow: center flat, above/below tilted and tightly stacked
+                  // Smooth interpolation: items blend from flat→tilted as they move away from center
                   const TILT = 70;
                   const GAP = 150;
                   const STACK_SPACING = 38;
 
-                  let translateY, rotateX, translateZ;
-                  if (isActive) {
-                    translateY = 0;
-                    rotateX = 0;
-                    translateZ = 140;
-                  } else {
-                    translateY = sign * (GAP + (absOffset - 1) * STACK_SPACING);
-                    rotateX = sign * TILT;
-                    translateZ = 0;
-                  }
+                  // Blend factor: 0 at center, 1 when ≥1 away (smooth in between)
+                  const blend = Math.min(1, absOffset);
 
-                  const zIndex = 100 - absOffset;
+                  const translateY = absOffset < 0.01 ? 0 : sign * (blend * GAP + Math.max(0, absOffset - 1) * STACK_SPACING);
+                  const rotateX = sign * TILT * blend;
+                  const translateZ = 140 * (1 - blend);
+
+                  const zIndex = 100 - Math.round(absOffset);
 
                   return (
                     <div
@@ -1219,9 +1284,8 @@ const App = () => {
                         height: 'min(260px, 55vw)',
                         transform: `translate(-50%, -50%) translateY(${translateY}px) rotateX(${rotateX}deg) translateZ(${translateZ}px)`,
                         zIndex,
-                        transition: 'transform 0.55s cubic-bezier(0.16, 1, 0.3, 1)',
                         willChange: 'transform',
-                        pointerEvents: isActive ? 'auto' : 'none',
+                        pointerEvents: absOffset < 0.5 ? 'auto' : 'none',
                       }}
                     >
                       <img
@@ -1234,7 +1298,7 @@ const App = () => {
                           objectFit: 'cover',
                           display: 'block',
                           borderRadius: '4px',
-                          boxShadow: isActive
+                          boxShadow: absOffset < 0.5
                             ? '0 20px 60px rgba(0,0,0,0.9)'
                             : '0 8px 24px rgba(0,0,0,0.6)',
                         }}
