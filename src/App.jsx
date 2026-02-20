@@ -935,9 +935,9 @@ const App = () => {
   }, [viewMode, rackItems.length]);
 
   return (
-    <div className={`${viewMode === 'rack' ? 'h-[100dvh] overflow-hidden flex flex-col' : 'min-h-screen'} bg-zinc-950 text-zinc-100 p-6`} style={{ paddingTop: 'calc(env(safe-area-inset-top) + 1.5rem)' }}>
+    <div className={`${viewMode === 'rack' ? 'h-[100dvh] flex flex-col' : 'min-h-screen'} bg-zinc-950 text-zinc-100 p-6`} style={{ paddingTop: 'calc(env(safe-area-inset-top) + 1.5rem)' }}>
       <div className="fixed top-0 left-0 right-0 z-50 pointer-events-none bg-zinc-950" style={{ height: 'env(safe-area-inset-top)' }} />
-      <header className="max-w-5xl mx-auto flex justify-between items-center mb-12 flex-shrink-0">
+      <header className="w-full max-w-5xl mx-auto flex justify-between items-center mb-12 flex-shrink-0">
         <h1 className="text-2xl font-black uppercase tracking-tighter flex items-center gap-2">
           <span className="relative inline-flex items-center justify-center w-8 h-8 rounded-full bg-indigo-500"><span className="w-2 h-2 rounded-full bg-zinc-950" /></span> Shelf
         </h1>
