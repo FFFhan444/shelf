@@ -132,13 +132,16 @@ const App = () => {
       }
       setIsLoaded(true);
     };
-    loadItems().then(() => {
+    const dismissSplash = () => {
       const splash = document.getElementById('splash');
       if (splash) {
         splash.classList.add('hide');
         setTimeout(() => splash.remove(), 400);
       }
-    });
+    };
+    loadItems().then(dismissSplash);
+    // Failsafe: always dismiss after 2s even if Supabase hangs
+    setTimeout(dismissSplash, 2000);
   }, []);
 
   const sortShelf = (items) => {

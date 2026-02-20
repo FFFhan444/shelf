@@ -36,5 +36,12 @@
     </div>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
+    <script>
+      // Failsafe: always remove splash after 3s even if app fails to load
+      setTimeout(function() {
+        var s = document.getElementById('splash');
+        if (s) { s.classList.add('hide'); setTimeout(function() { s.remove(); }, 400); }
+      }, 3000);
+    </script>
   </body>
 </html>
