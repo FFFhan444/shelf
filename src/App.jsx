@@ -198,6 +198,7 @@ const App = () => {
   const [dragOverIndex, setDragOverIndex] = useState(null);
   const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 });
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+  const [expandedItem, setExpandedItem] = useState(null);
   const dragTimeoutRef = useRef(null);
   const gridRef = useRef(null);
   const rackRef = useRef(null);
@@ -1023,6 +1024,14 @@ const App = () => {
     };
   }, [viewMode, rackItems.length]);
 
+  // Close expanded cover on Escape
+  useEffect(() => {
+    if (!expandedItem) return;
+    const onKey = (e) => { if (e.key === 'Escape') setExpandedItem(null); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [expandedItem]);
+
   return (
     <div className={`${viewMode === 'rack' ? 'h-[100dvh] flex flex-col' : 'min-h-screen'} bg-zinc-950 text-zinc-100 p-6`} style={{ paddingTop: 'calc(env(safe-area-inset-top) + 1.5rem)' }}>
       <div className="fixed top-0 left-0 right-0 z-50 pointer-events-none bg-zinc-950" style={{ height: 'env(safe-area-inset-top)' }} />
@@ -1063,6 +1072,7 @@ const App = () => {
               onDragOver={(e) => handleDragOver(e, index)}
               onDragEnd={handleDragEnd}
               onDrop={(e) => handleDrop(e)}
+              onClick={() => { if (!draggedItem) setExpandedItem(item); }}
               className={`group relative aspect-square bg-zinc-900 overflow-hidden border border-white/5 shadow-xl ${
                 isDragging ? 'opacity-0' : ''
               } ${!isDragging && 'cursor-grab active:cursor-grabbing'}`}
@@ -1125,7 +1135,7 @@ const App = () => {
               )}
 
               {/* Overlay Container */}
-              <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none group-hover:pointer-events-auto">
+              <div className={`absolute inset-0 transition-opacity duration-300 ${expandedItem ? 'opacity-0 pointer-events-none' : 'opacity-0 group-hover:opacity-100 pointer-events-none group-hover:pointer-events-auto'}`}>
                 {/* Blur and Darken Layer */}
                 <div className="absolute inset-0 bg-black/40 backdrop-blur-[2px] z-10" />
 
@@ -1331,6 +1341,38 @@ const App = () => {
         </div>
         )}
       </main>
+
+      {/* Expanded Cover Overlay */}
+      {expandedItem && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm animate-fade-in"
+          onClick={() => setExpandedItem(null)}
+        >
+          <button
+            onClick={() => setExpandedItem(null)}
+            className="absolute top-6 right-6 p-2 text-white/70 hover:text-white transition-colors z-10"
+          >
+            <X className="w-8 h-8" />
+          </button>
+          <div
+            className="relative"
+            style={{ width: '85vmin', height: '85vmin', maxWidth: '85vmin', maxHeight: '85vmin' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {expandedItem.coverUrl ? (
+              <img
+                src={expandedItem.coverUrl}
+                alt={expandedItem.type === 'artist' ? expandedItem.name : expandedItem.title}
+                className="w-full h-full object-cover rounded-lg shadow-2xl"
+              />
+            ) : (
+              <div className="w-full h-full rounded-lg shadow-2xl overflow-hidden">
+                <PlaceholderCover item={expandedItem} />
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Search Modal */}
       {isSearchOpen && (
