@@ -90,6 +90,96 @@ const RotatingText = ({ text }) => {
   );
 };
 
+// Accent colors for placeholder covers
+const COVER_COLORS = [
+  '#6366f1', // indigo
+  '#ec4899', // pink
+  '#f97316', // orange
+  '#06b6d4', // cyan
+  '#8b5cf6', // violet
+  '#10b981', // emerald
+  '#ef4444', // red
+  '#eab308', // yellow
+  '#3b82f6', // blue
+  '#d946ef', // fuchsia
+];
+
+// Simple hash to pick a consistent color per item
+const hashStr = (s) => {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  return Math.abs(h);
+};
+
+const PlaceholderCover = ({ item }) => {
+  const label = item.type === 'artist' ? item.name : item.title;
+  const sublabel = item.type === 'artist' ? (item.disambiguation || '') : (item.artist || '');
+  const seed = hashStr(label || sublabel || 'shelf');
+  const bg = COVER_COLORS[seed % COVER_COLORS.length];
+  // Darken for bottom gradient
+  const bgDark = bg + '99';
+
+  // Split label into lines — short words stay together, long words get their own line
+  const words = (label || '???').toUpperCase().split(/\s+/);
+
+  return (
+    <div className="w-full h-full relative overflow-hidden" style={{ background: `linear-gradient(160deg, ${bg}, ${bgDark})` }}>
+      <svg
+        viewBox="0 0 200 200"
+        preserveAspectRatio="none"
+        className="absolute inset-0 w-full h-full"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        {/* Main stretched title text */}
+        {words.map((word, i) => {
+          const total = words.length;
+          // Distribute words vertically across the cover
+          const yStart = 15;
+          const yEnd = 90;
+          const y = total === 1 ? 55 : yStart + (i / (total - 1)) * (yEnd - yStart);
+          // Vary font size — fewer words = bigger
+          const fontSize = total <= 2 ? 60 : total <= 4 ? 42 : 32;
+          return (
+            <text
+              key={i}
+              x="100"
+              y={y + fontSize * 0.35}
+              textAnchor="middle"
+              fill="white"
+              opacity="0.85"
+              fontFamily="'Helvetica Neue', 'Arial Black', sans-serif"
+              fontWeight="900"
+              fontSize={fontSize}
+              letterSpacing="-2"
+              textLength="190"
+              lengthAdjust="spacingAndGlyphs"
+            >
+              {word}
+            </text>
+          );
+        })}
+        {/* Sublabel at the bottom */}
+        {sublabel && (
+          <text
+            x="100"
+            y="195"
+            textAnchor="middle"
+            fill="white"
+            opacity="0.5"
+            fontFamily="'Helvetica Neue', Arial, sans-serif"
+            fontWeight="400"
+            fontStyle="italic"
+            fontSize="12"
+            letterSpacing="1"
+          >
+            {sublabel.length > 28 ? sublabel.slice(0, 26) + '…' : sublabel}
+          </text>
+        )}
+      </svg>
+    </div>
+  );
+};
+
 const App = () => {
   const [shelf, setShelf] = useState([]);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -1020,29 +1110,7 @@ const App = () => {
 
                 {/* Placeholder (only when not fetching and no cover) */}
                 {!item.coverUrl && !isFetching && (
-                  <div className="w-full h-full flex flex-col items-center justify-center p-4 text-center bg-gradient-to-br from-zinc-800 to-zinc-900">
-                    {item.type === 'artist' ? (
-                      <>
-                        <User className="w-8 h-8 text-zinc-600 mb-2" />
-                        <p className="text-xs font-bold line-clamp-2">{item.name}</p>
-                        {item.disambiguation && (
-                          <p className="text-[10px] opacity-50 italic line-clamp-1">{item.disambiguation}</p>
-                        )}
-                      </>
-                    ) : item.type === 'mix' ? (
-                      <>
-                        <Radio className="w-8 h-8 text-zinc-600 mb-2" />
-                        <p className="text-xs font-bold line-clamp-2">{item.artist}</p>
-                        <p className="text-[10px] opacity-50 italic line-clamp-1">{item.title}</p>
-                      </>
-                    ) : (
-                      <>
-                        <Disc className="w-8 h-8 text-zinc-600 mb-2" />
-                        <p className="text-xs font-bold line-clamp-2">{item.artist}</p>
-                        <p className="text-[10px] opacity-50 italic line-clamp-1">{item.title}</p>
-                      </>
-                    )}
-                  </div>
+                  <PlaceholderCover item={item} />
                 )}
               </div>
 
@@ -1143,20 +1211,7 @@ const App = () => {
                 {draggedItem.item.coverUrl ? (
                   <img src={draggedItem.item.coverUrl} className="w-full h-full object-cover" alt="" />
                 ) : (
-                  <div className="w-full h-full flex flex-col items-center justify-center p-4 text-center bg-gradient-to-br from-zinc-800 to-zinc-900">
-                    {draggedItem.item.type === 'artist' ? (
-                      <>
-                        <User className="w-8 h-8 text-zinc-600 mb-2" />
-                        <p className="text-xs font-bold line-clamp-2">{draggedItem.item.name}</p>
-                      </>
-                    ) : (
-                      <>
-                        <Disc className="w-8 h-8 text-zinc-600 mb-2" />
-                        <p className="text-xs font-bold line-clamp-2">{draggedItem.item.artist}</p>
-                        <p className="text-[10px] opacity-50 italic line-clamp-1">{draggedItem.item.title}</p>
-                      </>
-                    )}
-                  </div>
+                  <PlaceholderCover item={draggedItem.item} />
                 )}
               </div>
             </div>
