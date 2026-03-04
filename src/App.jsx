@@ -1145,7 +1145,7 @@ const App = () => {
                 {/* Action Buttons */}
                 <div className="absolute inset-0 flex items-center justify-center gap-3 z-30">
                   <button
-                    onClick={() => toggleListened(item)}
+                    onClick={(e) => { e.stopPropagation(); toggleListened(item); }}
                     className={`p-2 rounded-full transition-all duration-200 active:scale-90 ${
                       item.listened ? 'bg-green-600 hover:bg-green-500' : 'bg-zinc-800/80 hover:bg-zinc-700/80'
                     }`}
@@ -1158,7 +1158,7 @@ const App = () => {
                     )}
                   </button>
                   <button
-                    onClick={() => toggleListenAgain(item)}
+                    onClick={(e) => { e.stopPropagation(); toggleListenAgain(item); }}
                     className={`p-2 rounded-full transition-all duration-200 active:scale-90 ${
                       item.listenAgain ? 'bg-amber-500 hover:bg-amber-400' : 'bg-zinc-800/80 hover:bg-zinc-700/80'
                     }`}
@@ -1171,6 +1171,7 @@ const App = () => {
                       href={item.sourceUrl}
                       target="_blank"
                       rel="noopener noreferrer"
+                      onClick={(e) => e.stopPropagation()}
                       className="p-2 bg-zinc-800/80 rounded-full hover:bg-orange-600 transition-all duration-200 active:scale-90"
                       title="Open in SoundCloud"
                     >
@@ -1179,7 +1180,8 @@ const App = () => {
                   )}
                   {!item.coverUrl && item.type !== 'mix' && (
                     <button
-                      onClick={() => {
+                      onClick={(e) => {
+                        e.stopPropagation();
                         if (item.type === 'artist') {
                           fetchArtistImage(item.name, item.mbid, item.id);
                         } else {
@@ -1193,7 +1195,7 @@ const App = () => {
                     </button>
                   )}
                   <button
-                    onClick={() => removeRecord(item.id)}
+                    onClick={(e) => { e.stopPropagation(); removeRecord(item.id); }}
                     className="p-2 bg-zinc-800/80 rounded-full hover:bg-red-600 transition-all duration-200 active:scale-90"
                     title="Remove from shelf"
                   >
