@@ -1347,7 +1347,7 @@ const App = () => {
       {/* Expanded Cover Overlay */}
       {expandedItem && (
         <div
-          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm animate-fade-in"
+          className="fixed inset-0 z-[60] flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm animate-fade-in"
           onClick={() => setExpandedItem(null)}
         >
           <button
@@ -1372,6 +1372,10 @@ const App = () => {
                 <PlaceholderCover item={expandedItem} />
               </div>
             )}
+          </div>
+          <div className="text-center pt-4 px-6 py-2 rounded-xl backdrop-blur-md bg-zinc-900/60 mt-4" onClick={(e) => e.stopPropagation()}>
+            <p className="text-lg font-bold">{expandedItem.type === 'artist' ? expandedItem.name : expandedItem.title}</p>
+            <p className="text-sm text-zinc-400 mt-0.5">{expandedItem.type === 'artist' ? 'Discography' : expandedItem.artist}</p>
           </div>
         </div>
       )}
