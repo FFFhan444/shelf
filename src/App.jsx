@@ -14,6 +14,7 @@ const fromDb = (row) => ({
   mbid: row.mbid,
   coverUrl: row.cover_url,
   sourceUrl: row.source_url,
+  spotifyUrl: row.spotify_url,
   releaseDate: row.release_date,
   addedAt: row.added_at,
   listened: row.listened ?? false,
@@ -33,6 +34,7 @@ const toDb = (item) => ({
   mbid: item.mbid || null,
   cover_url: item.coverUrl || null,
   source_url: item.sourceUrl || null,
+  spotify_url: item.spotifyUrl || null,
   release_date: item.releaseDate || null,
   added_at: item.addedAt,
   listened: item.listened ?? false,
@@ -235,6 +237,17 @@ const App = () => {
     loadItems().then(dismissSplash);
     setTimeout(dismissSplash, 2000);
   }, []);
+
+  // Backfill Spotify URLs for items that don't have one
+  const hasBackfilled = useRef(false);
+  useEffect(() => {
+    if (!isLoaded || hasBackfilled.current) return;
+    hasBackfilled.current = true;
+    const missing = shelf.filter(i => !i.spotifyUrl && i.type !== 'mix');
+    missing.forEach((item, idx) => {
+      setTimeout(() => fetchSpotifyUrl(item), idx * 200);
+    });
+  }, [isLoaded]);
 
   const sortShelf = (items) => {
     return [...items].sort((a, b) => {
@@ -649,6 +662,25 @@ const App = () => {
     }, 300);
   };
 
+  // Spotify integration — calls serverless proxy to keep secret server-side
+  const fetchSpotifyUrl = async (item) => {
+    try {
+      const type = item.type === 'artist' ? 'artist' : 'album';
+      const query = item.type === 'artist'
+        ? item.name
+        : `${item.title} ${item.artist}`;
+      const res = await fetch(`/api/spotify?q=${encodeURIComponent(query)}&type=${type}`);
+      const data = await res.json();
+      if (!data.url) return;
+      setShelf(prev => prev.map(i =>
+        i.id === item.id ? { ...i, spotifyUrl: data.url } : i
+      ));
+      await supabase.from('items').update({ spotify_url: data.url }).eq('id', item.id);
+    } catch (e) {
+      console.error('Spotify lookup failed:', e);
+    }
+  };
+
   const addAlbum = async (album) => {
     const newItem = {
       id: crypto.randomUUID(),
@@ -675,6 +707,7 @@ const App = () => {
 
     setShelf(prev => sortShelf([...prev, newItem]));
     fetchAlbumArtwork(album.artist, album.title, newItem.id);
+    fetchSpotifyUrl(newItem);
   };
 
   const addArtist = async (artist) => {
@@ -700,6 +733,7 @@ const App = () => {
 
     setShelf(prev => sortShelf([...prev, newItem]));
     fetchArtistImage(artist.name, artist.mbid, newItem.id);
+    fetchSpotifyUrl(newItem);
   };
 
   const addManualEntry = async () => {
@@ -753,6 +787,7 @@ const App = () => {
 
       // Try to fetch artist image
       fetchArtistImage(artistName, null, newItem.id);
+      fetchSpotifyUrl(newItem);
       return;
     }
 
@@ -812,6 +847,7 @@ const App = () => {
 
     // Try to fetch artwork
     fetchAlbumArtwork(artist, title, newItem.id);
+    fetchSpotifyUrl(newItem);
   };
 
   const bulkImportAlbums = async (lines) => {
@@ -1196,6 +1232,20 @@ const App = () => {
                       title="Open in SoundCloud"
                     >
                       <ExternalLink className="w-5 h-5 text-zinc-300" />
+                    </a>
+                  )}
+                  {item.type !== 'mix' && item.spotifyUrl && (
+                    <a
+                      href={item.spotifyUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                      className="p-2 bg-zinc-800/80 rounded-full hover:bg-[#1DB954] transition-all duration-200 active:scale-90"
+                      title="Open in Spotify"
+                    >
+                      <svg className="w-5 h-5 text-zinc-300" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/>
+                      </svg>
                     </a>
                   )}
                   {!item.coverUrl && item.type !== 'mix' && (
