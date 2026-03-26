@@ -50,6 +50,6 @@ export default async function handler(req, res) {
     res.status(200).json({ url });
   } catch (e) {
     console.error('Spotify search failed:', e);
-    res.status(500).json({ error: 'Spotify search failed' });
+    res.status(500).json({ error: e.message || 'Spotify search failed' });
   }
 }
