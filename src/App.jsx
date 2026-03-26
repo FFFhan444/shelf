@@ -199,9 +199,11 @@ const App = () => {
   const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 });
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   const [expandedItem, setExpandedItem] = useState(null);
+  const [visibleCount, setVisibleCount] = useState(15);
   const dragTimeoutRef = useRef(null);
   const gridRef = useRef(null);
   const rackRef = useRef(null);
+  const sentinelRef = useRef(null);
 
   // Load shelf from Supabase on mount
   useEffect(() => {
@@ -240,14 +242,30 @@ const App = () => {
       if (a.listened !== b.listened) {
         return a.listened ? 1 : -1;
       }
-      // Within the same listened status, respect manual order
-      if (a.order != null && b.order != null) {
-        return a.order - b.order;
-      }
-      // Otherwise sort by date added (newest first)
-      return new Date(b.addedAt) - new Date(a.addedAt);
+      // Oldest first — prioritise items waiting longest
+      return new Date(a.addedAt) - new Date(b.addedAt);
     });
   };
+
+  // Batch rendering: load more items as user scrolls
+  useEffect(() => {
+    setVisibleCount(15);
+  }, [shelf.length]);
+
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setVisibleCount((prev) => prev + 15);
+        }
+      },
+      { rootMargin: '200px' }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  });
 
   const handleDragStart = (e, item, index) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -1059,7 +1077,7 @@ const App = () => {
       <main className={`max-w-5xl mx-auto ${viewMode === 'rack' ? 'flex-1 min-h-0 flex flex-col' : ''}`}>
         {viewMode === 'grid' ? (
         <div ref={gridRef} className="relative grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-6">
-          {shelf.map((item, index) => {
+          {shelf.slice(0, visibleCount).map((item, index) => {
             const isDragging = draggedItem?.item.id === item.id;
             const isFetching = fetchingArt.has(item.id);
 
@@ -1111,6 +1129,8 @@ const App = () => {
                 {item.coverUrl && (
                   <img
                     src={item.coverUrl}
+                    loading="lazy"
+                    decoding="async"
                     className="w-full h-full object-cover transition-opacity duration-500"
                     alt={item.type === 'artist' ? item.name : item.title}
                     style={{ opacity: isFetching ? 0 : undefined }}
@@ -1206,6 +1226,11 @@ const App = () => {
             </div>
             );
           })}
+
+          {/* Sentinel for infinite scroll */}
+          {visibleCount < shelf.length && (
+            <div ref={sentinelRef} className="col-span-full h-1" />
+          )}
 
           {/* Floating dragged item that follows cursor */}
           {draggedItem && gridRef.current && (
