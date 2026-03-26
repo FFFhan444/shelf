@@ -370,6 +370,19 @@ const App = () => {
     handleDragEnd(e);
   };
 
+  // Helper: fetch cover from Spotify via serverless proxy
+  const fetchSpotifyCover = async (artist, album) => {
+    try {
+      const query = `${album} ${artist}`;
+      const res = await fetch(`/api/spotify?q=${encodeURIComponent(query)}&type=album`);
+      const data = await res.json();
+      return data.imageUrl || null;
+    } catch (e) {
+      console.warn('Spotify cover fetch failed', e);
+    }
+    return null;
+  };
+
   // Helper: fetch cover from Cover Art Archive
   const fetchCaaCover = async (artist, album) => {
     try {
@@ -432,7 +445,8 @@ const App = () => {
   const fetchAlbumArtwork = async (artist, album, itemId) => {
     setFetchingArt(prev => new Set(prev).add(itemId));
     try {
-      const coverUrl = await fetchCaaCover(artist, album)
+      const coverUrl = await fetchSpotifyCover(artist, album)
+        || await fetchCaaCover(artist, album)
         || await fetchItunesCover(artist, album)
         || await fetchBandcampCover(artist, album);
 
@@ -480,7 +494,30 @@ const App = () => {
         artistMbid = exactMatch?.id || mbSearchData.artists?.[0]?.id;
       }
 
-      // Try TheAudioDB first (has nice press photos)
+      // Try Spotify first (fast and reliable)
+      try {
+        const spotifyRes = await fetch(`/api/spotify?q=${encodeURIComponent(artistName)}&type=artist`);
+        const spotifyData = await spotifyRes.json();
+        if (spotifyData.imageUrl) {
+          const { error } = await supabase
+            .from('items')
+            .update({ cover_url: spotifyData.imageUrl, mbid: artistMbid })
+            .eq('id', itemId);
+          if (error) console.error('Failed to update artist image:', error);
+
+          setShelf(prev => {
+            const updated = prev.map(item =>
+              item.id === itemId ? { ...item, coverUrl: spotifyData.imageUrl, mbid: artistMbid || item.mbid } : item
+            );
+            return sortShelf(updated);
+          });
+          return;
+        }
+      } catch (e) {
+        console.warn('Spotify artist image failed', e);
+      }
+
+      // Try TheAudioDB (has nice press photos)
       const audioDbRes = await fetch(
         `https://www.theaudiodb.com/api/v1/json/2/search.php?s=${encodeURIComponent(artistName)}`
       );

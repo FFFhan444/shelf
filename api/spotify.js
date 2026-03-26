@@ -46,8 +46,11 @@ export default async function handler(req, res) {
     );
     const data = await spotifyRes.json();
     const results = type === 'artist' ? data.artists?.items : data.albums?.items;
-    const url = results?.[0]?.external_urls?.spotify || null;
-    res.status(200).json({ url });
+    const item = results?.[0];
+    const url = item?.external_urls?.spotify || null;
+    const images = item?.images || [];
+    const imageUrl = images[0]?.url || null;
+    res.status(200).json({ url, imageUrl });
   } catch (e) {
     console.error('Spotify search failed:', e);
     res.status(500).json({ error: e.message || 'Spotify search failed' });
