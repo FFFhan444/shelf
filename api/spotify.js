@@ -4,17 +4,24 @@ async function getToken() {
   if (cachedToken && cachedToken.expiresAt > Date.now()) {
     return cachedToken.token;
   }
+  const { SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET } = process.env;
+  if (!SPOTIFY_CLIENT_ID || !SPOTIFY_CLIENT_SECRET) {
+    throw new Error('Missing SPOTIFY_CLIENT_ID or SPOTIFY_CLIENT_SECRET env vars');
+  }
   const res = await fetch('https://accounts.spotify.com/api/token', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
       Authorization: 'Basic ' + Buffer.from(
-        process.env.SPOTIFY_CLIENT_ID + ':' + process.env.SPOTIFY_CLIENT_SECRET
+        SPOTIFY_CLIENT_ID + ':' + SPOTIFY_CLIENT_SECRET
       ).toString('base64'),
     },
     body: 'grant_type=client_credentials',
   });
   const data = await res.json();
+  if (!data.access_token) {
+    throw new Error('Spotify token response: ' + JSON.stringify(data));
+  }
   cachedToken = {
     token: data.access_token,
     expiresAt: Date.now() + (data.expires_in - 60) * 1000,
