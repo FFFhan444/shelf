@@ -373,7 +373,7 @@ const App = () => {
   // Helper: fetch cover from Spotify via serverless proxy
   const fetchSpotifyCover = async (artist, album) => {
     try {
-      const query = `${album} ${artist}`;
+      const query = `album:"${album}" artist:"${artist}"`;
       const res = await fetch(`/api/spotify?q=${encodeURIComponent(query)}&type=album`);
       const data = await res.json();
       return data.imageUrl || null;
@@ -496,7 +496,7 @@ const App = () => {
 
       // Try Spotify first (fast and reliable)
       try {
-        const spotifyRes = await fetch(`/api/spotify?q=${encodeURIComponent(artistName)}&type=artist`);
+        const spotifyRes = await fetch(`/api/spotify?q=${encodeURIComponent(`artist:"${artistName}"`)}&type=artist`);
         const spotifyData = await spotifyRes.json();
         if (spotifyData.imageUrl) {
           const { error } = await supabase
@@ -704,8 +704,8 @@ const App = () => {
     try {
       const type = item.type === 'artist' ? 'artist' : 'album';
       const query = item.type === 'artist'
-        ? item.name
-        : `${item.title} ${item.artist}`;
+        ? `artist:"${item.name}"`
+        : `album:"${item.title}" artist:"${item.artist}"`;
       const res = await fetch(`/api/spotify?q=${encodeURIComponent(query)}&type=${type}`);
       const data = await res.json();
       if (!data.url) return;
