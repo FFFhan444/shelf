@@ -47,7 +47,14 @@ export default async function handler(req, res) {
     const data = await spotifyRes.json();
     const results = type === 'artist' ? data.artists?.items : data.albums?.items;
     const item = results?.[0];
-    const url = item?.external_urls?.spotify || null;
+    let url = item?.external_urls?.spotify || null;
+    // For albums not yet released, use the prerelease URL
+    if (url && type === 'album' && item.release_date) {
+      const releaseDate = new Date(item.release_date + (item.release_date.length === 10 ? 'T00:00:00' : ''));
+      if (releaseDate > new Date()) {
+        url = url.replace('/album/', '/prerelease/');
+      }
+    }
     const images = item?.images || [];
     const imageUrl = images[0]?.url || null;
     res.status(200).json({ url, imageUrl });
