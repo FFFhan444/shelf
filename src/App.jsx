@@ -202,6 +202,7 @@ const App = () => {
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   const [expandedItem, setExpandedItem] = useState(null);
   const [visibleCount, setVisibleCount] = useState(15);
+  const [showStarredOnly, setShowStarredOnly] = useState(false);
   const dragTimeoutRef = useRef(null);
   const gridRef = useRef(null);
   const rackRef = useRef(null);
@@ -246,6 +247,63 @@ const App = () => {
     const missing = shelf.filter(i => !i.spotifyUrl && i.type !== 'mix');
     missing.forEach((item, idx) => {
       setTimeout(() => fetchSpotifyUrl(item), idx * 200);
+    });
+  }, [isLoaded]);
+
+  // One-shot rescore: after the ranking fix shipped, re-query Spotify for
+  // every existing item with the new scored endpoint. If the new lookup
+  // returns a different confident URL, replace the stored one; if it returns
+  // null (no confident match), CLEAR the stored URL — a wrong link is worse
+  // than no link. New item additions still fall back to a weak match because
+  // they go through fetchSpotifyUrl, not this rescore path. Gated by a
+  // localStorage flag so it runs once per client.
+  const hasRescored = useRef(false);
+  useEffect(() => {
+    if (!isLoaded || hasRescored.current) return;
+    if (typeof window === 'undefined') return;
+    if (window.localStorage.getItem('spotifyRescoreDone_v2')) return;
+    hasRescored.current = true;
+
+    // Skip prerelease links — Spotify's Search API doesn't return prereleases,
+    // so the new scored lookup would always return null and we'd clobber a
+    // user-confirmed or manually-set prerelease URL.
+    const targets = shelf.filter(i =>
+      i.spotifyUrl &&
+      i.type !== 'mix' &&
+      !i.spotifyUrl.includes('/prerelease/')
+    );
+    if (targets.length === 0) {
+      window.localStorage.setItem('spotifyRescoreDone_v2', '1');
+      return;
+    }
+
+    const rescoreOne = async (item) => {
+      try {
+        const res = await fetch(buildSpotifyRequest(item));
+        const data = await res.json();
+        const newUrl = data.url || null;
+        if (newUrl === item.spotifyUrl) return; // unchanged
+        setShelf(prev => prev.map(i =>
+          i.id === item.id ? { ...i, spotifyUrl: newUrl } : i
+        ));
+        await supabase.from('items').update({ spotify_url: newUrl }).eq('id', item.id);
+      } catch (e) {
+        console.error('Spotify rescore failed for', item.id, e);
+      }
+    };
+
+    // Worker pool with concurrency 4 to avoid bursting the Spotify API.
+    const queue = [...targets];
+    const runWorker = async () => {
+      while (queue.length) {
+        const next = queue.shift();
+        if (next) await rescoreOne(next);
+      }
+    };
+    const workers = Array.from({ length: 4 }, runWorker);
+    Promise.all(workers).then(() => {
+      window.localStorage.setItem('spotifyRescoreDone_v2', '1');
+      console.log('Spotify rescore complete');
     });
   }, [isLoaded]);
 
@@ -699,14 +757,41 @@ const App = () => {
     }, 300);
   };
 
-  // Spotify integration — calls serverless proxy to keep secret server-side
+  // Spotify integration — calls serverless proxy to keep secret server-side.
+  // Builds an advanced search query and also forwards the raw fields so the
+  // proxy can rank and verify candidates (see api/spotify.js).
+  const buildSpotifyRequest = (item) => {
+    const type = item.type === 'artist' ? 'artist' : 'album';
+    // Spotify's advanced search breaks silently on unmatched quotes — strip them.
+    const safe = (s) => (s || '').replace(/"/g, ' ').trim();
+    const title = safe(item.title);
+    const artist = safe(item.artist);
+    const name = safe(item.name);
+    const yearMatch = String(item.year || item.releaseDate || '').match(/\d{4}/);
+    const year = yearMatch ? parseInt(yearMatch[0], 10) : null;
+
+    let query;
+    if (type === 'artist') {
+      query = `artist:"${name}"`;
+    } else {
+      query = `album:"${title}" artist:"${artist}"`;
+      if (year) query += ` year:${year}`;
+    }
+
+    const params = new URLSearchParams({ q: query, type });
+    if (type === 'album') {
+      if (title) params.set('title', title);
+      if (artist) params.set('artist', artist);
+      if (year) params.set('year', String(year));
+    } else {
+      if (name) params.set('title', name);
+    }
+    return `/api/spotify?${params.toString()}`;
+  };
+
   const fetchSpotifyUrl = async (item) => {
     try {
-      const type = item.type === 'artist' ? 'artist' : 'album';
-      const query = item.type === 'artist'
-        ? `artist:"${item.name}"`
-        : `album:"${item.title}" artist:"${item.artist}"`;
-      const res = await fetch(`/api/spotify?q=${encodeURIComponent(query)}&type=${type}`);
+      const res = await fetch(buildSpotifyRequest(item));
       const data = await res.json();
       if (!data.url) return;
       setShelf(prev => prev.map(i =>
@@ -1139,6 +1224,15 @@ const App = () => {
             {viewMode === 'grid' ? <Layers className="w-5 h-5" /> : <LayoutGrid className="w-5 h-5" />}
           </button>
           <button
+            onClick={() => setShowStarredOnly(s => !s)}
+            className={`p-3 rounded-full transition-colors active:scale-95 ${
+              showStarredOnly ? 'bg-amber-500 hover:bg-amber-400' : 'bg-zinc-800 hover:bg-zinc-700'
+            }`}
+            title={showStarredOnly ? 'Showing starred only — click to show all' : 'Show starred only'}
+          >
+            <Star className={`w-5 h-5 ${showStarredOnly ? 'text-white' : 'text-zinc-300'}`} strokeWidth={2} />
+          </button>
+          <button
             onClick={() => setIsSearchOpen(true)}
             className="bg-indigo-600 hover:bg-indigo-500 p-3 rounded-full shadow-lg transition-transform active:scale-95"
           >
@@ -1150,7 +1244,7 @@ const App = () => {
       <main className={`max-w-5xl mx-auto ${viewMode === 'rack' ? 'flex-1 min-h-0 flex flex-col' : ''}`}>
         {viewMode === 'grid' ? (
         <div ref={gridRef} className="relative grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-6">
-          {shelf.slice(0, visibleCount).map((item, index) => {
+          {(showStarredOnly ? shelf.filter(i => i.listenAgain) : shelf).slice(0, visibleCount).map((item, index) => {
             const isDragging = draggedItem?.item.id === item.id;
             const isFetching = fetchingArt.has(item.id);
 
