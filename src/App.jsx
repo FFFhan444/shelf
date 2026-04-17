@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Disc, Plus, Trash2, X, Music4, Check, Circle, User, RefreshCw, Loader2, Star, Radio, ExternalLink, LayoutGrid, Layers } from 'lucide-react';
+import { Disc, Plus, Trash2, X, Music4, Check, Circle, User, RefreshCw, Loader2, Star, Radio, ExternalLink } from 'lucide-react';
 import { supabase } from './supabaseClient';
 
 // Map DB row (snake_case) to frontend object (camelCase)
@@ -192,8 +192,6 @@ const App = () => {
 
   const [fetchingArt, setFetchingArt] = useState(new Set());
   const [searchMode, setSearchMode] = useState('music');
-  const [viewMode, setViewMode] = useState('grid');
-  const [activeIndex, setActiveIndex] = useState(0);
 
   const [isLoaded, setIsLoaded] = useState(false);
   const [draggedItem, setDraggedItem] = useState(null);
@@ -205,7 +203,6 @@ const App = () => {
   const [showStarredOnly, setShowStarredOnly] = useState(false);
   const dragTimeoutRef = useRef(null);
   const gridRef = useRef(null);
-  const rackRef = useRef(null);
   const sentinelRef = useRef(null);
 
   // Load shelf from Supabase on mount
@@ -305,6 +302,33 @@ const App = () => {
       window.localStorage.setItem('spotifyRescoreDone_v2', '1');
       console.log('Spotify rescore complete');
     });
+  }, [isLoaded]);
+
+  // Auto-retry artwork for items that are missing a cover. Runs once per
+  // session so a page refresh always gives orphans another chance, but a
+  // single render pass doesn't hammer the APIs.
+  const hasRetriedArt = useRef(false);
+  useEffect(() => {
+    if (!isLoaded || hasRetriedArt.current) return;
+    if (shelf.length === 0) return;
+    hasRetriedArt.current = true;
+
+    const targets = shelf.filter(i => !i.coverUrl && i.type !== 'mix');
+    if (targets.length === 0) return;
+
+    const queue = [...targets];
+    const runWorker = async () => {
+      while (queue.length) {
+        const item = queue.shift();
+        if (!item) continue;
+        if (item.type === 'artist') {
+          await fetchArtistImage(item.name, item.mbid, item.id);
+        } else {
+          await fetchAlbumArtwork(item.artist, item.title, item.id);
+        }
+      }
+    };
+    Array.from({ length: 3 }, runWorker);
   }, [isLoaded]);
 
   const sortShelf = (items) => {
@@ -430,11 +454,25 @@ const App = () => {
 
   // Helper: fetch cover from Spotify via serverless proxy
   const fetchSpotifyCover = async (artist, album) => {
-    try {
-      const query = `album:"${album}" artist:"${artist}"`;
-      const res = await fetch(`/api/spotify?q=${encodeURIComponent(query)}&type=album`);
+    const lookup = async (q) => {
+      const params = new URLSearchParams({
+        q,
+        type: 'album',
+        title: album || '',
+        artist: artist || '',
+      });
+      const res = await fetch(`/api/spotify?${params.toString()}`);
       const data = await res.json();
       return data.imageUrl || null;
+    };
+    try {
+      // Field-filtered query is strictest — best when it hits.
+      const filtered = `album:"${album}" artist:"${artist}"`;
+      const hit = await lookup(filtered);
+      if (hit) return hit;
+      // Fallback: plain-text query. Server still scores against title/artist,
+      // so a wrong match is rejected by MIN_SCORE rather than returned.
+      return await lookup(`${album} ${artist}`);
     } catch (e) {
       console.warn('Spotify cover fetch failed', e);
     }
@@ -1159,47 +1197,6 @@ const App = () => {
     return `${item.artist} — ${item.title} — `;
   };
 
-  // Items with covers for rack view — only unlistened or starred to listen again
-  const rackItems = shelf.filter(i => i.coverUrl && (!i.listened || i.listenAgain));
-
-  // Momentum scroll for rack mode — accumulates wheel delta, fast scrolling skips items
-  const wheelAccum = useRef(0);
-  const wheelTimer = useRef(null);
-
-  useEffect(() => {
-    if (viewMode !== 'rack') return;
-    document.body.style.overflow = 'hidden';
-
-    const flushWheel = () => {
-      const steps = Math.round(wheelAccum.current);
-      if (steps !== 0) {
-        setActiveIndex(prev => Math.max(0, Math.min(prev + steps, rackItems.length - 1)));
-      }
-      wheelAccum.current = 0;
-      wheelTimer.current = null;
-    };
-
-    const onWheel = (e) => {
-      e.preventDefault();
-      // Accumulate delta — fast scrolling builds up bigger jumps
-      wheelAccum.current += e.deltaY / 80;
-      // Flush after a short pause so rapid ticks accumulate
-      if (wheelTimer.current) clearTimeout(wheelTimer.current);
-      wheelTimer.current = setTimeout(flushWheel, 60);
-      // Also flush immediately if accumulated enough for a step
-      if (Math.abs(wheelAccum.current) >= 1) {
-        flushWheel();
-      }
-    };
-
-    document.addEventListener('wheel', onWheel, { passive: false });
-    return () => {
-      document.body.style.overflow = '';
-      document.removeEventListener('wheel', onWheel);
-      if (wheelTimer.current) clearTimeout(wheelTimer.current);
-    };
-  }, [viewMode, rackItems.length]);
-
   // Close expanded cover on Escape
   useEffect(() => {
     if (!expandedItem) return;
@@ -1209,20 +1206,13 @@ const App = () => {
   }, [expandedItem]);
 
   return (
-    <div className={`${viewMode === 'rack' ? 'h-[100dvh] flex flex-col' : 'min-h-screen'} bg-zinc-950 text-zinc-100 p-6`} style={{ paddingTop: 'calc(env(safe-area-inset-top) + 1.5rem)' }}>
+    <div className="min-h-screen bg-zinc-950 text-zinc-100 p-6" style={{ paddingTop: 'calc(env(safe-area-inset-top) + 1.5rem)' }}>
       <div className="fixed top-0 left-0 right-0 z-50 pointer-events-none bg-zinc-950" style={{ height: 'env(safe-area-inset-top)' }} />
       <header className="w-full max-w-5xl mx-auto flex justify-between items-center mb-12 flex-shrink-0">
         <h1 className="text-2xl font-black uppercase tracking-tighter flex items-center gap-2">
           <span className="relative inline-flex items-center justify-center w-8 h-8 rounded-full bg-indigo-500"><span className="w-2 h-2 rounded-full bg-zinc-950" /></span> Shelf
         </h1>
         <div className="flex items-center gap-3">
-          <button
-            onClick={() => setViewMode(v => v === 'grid' ? 'rack' : 'grid')}
-            className="p-3 rounded-full bg-zinc-800 hover:bg-zinc-700 transition-colors active:scale-95"
-            title={viewMode === 'grid' ? 'Switch to rack view' : 'Switch to grid view'}
-          >
-            {viewMode === 'grid' ? <Layers className="w-5 h-5" /> : <LayoutGrid className="w-5 h-5" />}
-          </button>
           <button
             onClick={() => setShowStarredOnly(s => !s)}
             className={`p-3 rounded-full transition-colors active:scale-95 ${
@@ -1241,8 +1231,7 @@ const App = () => {
         </div>
       </header>
 
-      <main className={`max-w-5xl mx-auto ${viewMode === 'rack' ? 'flex-1 min-h-0 flex flex-col' : ''}`}>
-        {viewMode === 'grid' ? (
+      <main className="max-w-5xl mx-auto">
         <div ref={gridRef} className="relative grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-6">
           {(showStarredOnly ? shelf.filter(i => i.listenAgain) : shelf).slice(0, visibleCount).map((item, index) => {
             const isDragging = draggedItem?.item.id === item.id;
@@ -1443,111 +1432,6 @@ const App = () => {
             </div>
           )}
         </div>
-        ) : (
-        /* Rack View — vertical coverflow */
-        <div className="flex flex-col items-center flex-1 min-h-0">
-          {rackItems.length < 3 ? (
-            <div className="py-20 text-center text-zinc-600">
-              <Layers className="w-10 h-10 mx-auto mb-2 opacity-20" />
-              <p>Not enough covers for rack view.</p>
-              <p className="text-sm mt-1 opacity-60">Add more albums with artwork, or switch to grid view</p>
-            </div>
-          ) : (
-            <>
-              <div
-                ref={rackRef}
-                className="relative flex-1 min-h-0 w-full select-none"
-                style={{ perspective: '800px', perspectiveOrigin: '50% 50%' }}
-                onTouchStart={(e) => {
-                  rackRef.current._touchY = e.touches[0].clientY;
-                  rackRef.current._touchTime = Date.now();
-                  rackRef.current._touchAccum = 0;
-                }}
-                onTouchMove={(e) => {
-                  if (!rackRef.current?._touchY) return;
-                  const currentY = e.touches[0].clientY;
-                  const diff = rackRef.current._touchY - currentY;
-                  rackRef.current._touchAccum += diff;
-                  // Step when accumulated enough drag distance
-                  if (Math.abs(rackRef.current._touchAccum) > 40) {
-                    const steps = Math.round(rackRef.current._touchAccum / 40);
-                    setActiveIndex(prev => Math.max(0, Math.min(prev + steps, rackItems.length - 1)));
-                    rackRef.current._touchAccum -= steps * 40;
-                  }
-                  rackRef.current._touchY = currentY;
-                }}
-              >
-                {rackItems.map((item, i) => {
-                  const offset = i - activeIndex;
-                  if (Math.abs(offset) > 6) return null;
-
-                  const absOffset = Math.abs(offset);
-                  const isActive = offset === 0;
-                  const sign = Math.sign(offset);
-
-                  const TILT = 70;
-                  const GAP = 150;
-                  const STACK_SPACING = 38;
-
-                  let translateY, rotateX, translateZ;
-                  if (isActive) {
-                    translateY = 0;
-                    rotateX = 0;
-                    translateZ = 140;
-                  } else {
-                    translateY = sign * (GAP + (absOffset - 1) * STACK_SPACING);
-                    rotateX = sign * TILT;
-                    translateZ = 0;
-                  }
-
-                  const zIndex = 100 - absOffset;
-
-                  return (
-                    <div
-                      key={item.id}
-                      className="absolute left-1/2 top-1/2"
-                      style={{
-                        width: 'min(260px, 55vw)',
-                        height: 'min(260px, 55vw)',
-                        transform: `translate(-50%, -50%) translateY(${translateY}px) rotateX(${rotateX}deg) translateZ(${translateZ}px)`,
-                        zIndex,
-                        transition: 'transform 0.45s cubic-bezier(0.16, 1, 0.3, 1)',
-                        willChange: 'transform',
-                        pointerEvents: isActive ? 'auto' : 'none',
-                      }}
-                    >
-                      <img
-                        src={item.coverUrl}
-                        alt={item.title || item.name}
-                        draggable={false}
-                        style={{
-                          width: '100%',
-                          height: '100%',
-                          objectFit: 'cover',
-                          display: 'block',
-                          borderRadius: '4px',
-                          boxShadow: isActive
-                            ? '0 20px 60px rgba(0,0,0,0.9)'
-                            : '0 8px 24px rgba(0,0,0,0.6)',
-                        }}
-                      />
-                    </div>
-                  );
-                })}
-
-              </div>
-
-              {/* Active item info */}
-              {rackItems[activeIndex] && (
-                <div className="flex-shrink-0 text-center pb-5 pt-3 mx-auto px-6 py-2 rounded-xl backdrop-blur-md bg-zinc-900/60">
-                  <p className="text-lg font-bold">{rackItems[activeIndex].type === 'artist' ? rackItems[activeIndex].name : rackItems[activeIndex].title}</p>
-                  <p className="text-sm text-zinc-400 mt-0.5">{rackItems[activeIndex].type === 'artist' ? 'Discography' : rackItems[activeIndex].artist}</p>
-                </div>
-              )}
-            </>
-          )}
-        </div>
-        )}
       </main>
 
       {/* Expanded Cover Overlay */}
