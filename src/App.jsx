@@ -1264,12 +1264,16 @@ const App = () => {
               const secondaryText = item.type === 'artist' ? (item.disambiguation || 'Artist') : item.artist;
               return (
                 <div key={item.id} className="relative overflow-hidden">
-                  <div className="absolute inset-0 bg-amber-500 flex items-center pl-4">
-                    <Star className="w-5 h-5 text-white" strokeWidth={2} />
-                  </div>
-                  <div className="absolute inset-0 bg-red-600 flex items-center justify-end pr-4">
-                    <Trash2 className="w-5 h-5 text-white" strokeWidth={2} />
-                  </div>
+                  {deltaX > 0 && (
+                    <div className="absolute inset-0 bg-amber-500 flex items-center pl-4">
+                      <Star className="w-5 h-5 text-white fill-white" strokeWidth={2} />
+                    </div>
+                  )}
+                  {deltaX < 0 && (
+                    <div className="absolute inset-0 bg-red-600 flex items-center justify-end pr-4">
+                      <Trash2 className="w-5 h-5 text-white" strokeWidth={2} />
+                    </div>
+                  )}
                   <div
                     className="relative z-10 flex items-center gap-3 px-4 py-3 bg-zinc-950"
                     style={{
