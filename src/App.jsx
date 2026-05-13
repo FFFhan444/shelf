@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Disc, Plus, Trash2, X, Music4, Check, Circle, User, RefreshCw, Loader2, Star, Radio, ExternalLink } from 'lucide-react';
+import { Disc, Plus, Trash2, X, Music4, Check, Circle, User, RefreshCw, Loader2, Star, Radio, ExternalLink, List, LayoutGrid } from 'lucide-react';
 import { supabase } from './supabaseClient';
 
 // Map DB row (snake_case) to frontend object (camelCase)
@@ -201,6 +201,8 @@ const App = () => {
   const [expandedItem, setExpandedItem] = useState(null);
   const [visibleCount, setVisibleCount] = useState(15);
   const [showStarredOnly, setShowStarredOnly] = useState(false);
+  const [viewMode, setViewMode] = useState('list');
+  const [swipeState, setSwipeState] = useState({ id: null, startX: 0, deltaX: 0 });
   const dragTimeoutRef = useRef(null);
   const gridRef = useRef(null);
   const sentinelRef = useRef(null);
@@ -1174,6 +1176,27 @@ const App = () => {
     );
   };
 
+  const handleSwipeStart = (e, itemId) => {
+    setSwipeState({ id: itemId, startX: e.touches[0].clientX, deltaX: 0 });
+  };
+
+  const handleSwipeMove = (e) => {
+    if (!swipeState.id) return;
+    const deltaX = e.touches[0].clientX - swipeState.startX;
+    setSwipeState(s => ({ ...s, deltaX }));
+  };
+
+  const handleSwipeEnd = () => {
+    const { id, deltaX } = swipeState;
+    if (deltaX < -80) {
+      removeRecord(id);
+    } else if (deltaX > 80) {
+      const item = shelf.find(i => i.id === id);
+      if (item) toggleListenAgain(item);
+    }
+    setSwipeState({ id: null, startX: 0, deltaX: 0 });
+  };
+
   const removeRecord = async (itemId) => {
     // Delete from Supabase
     try {
@@ -1231,7 +1254,89 @@ const App = () => {
         </div>
       </header>
 
-      <main className="max-w-5xl mx-auto">
+      <main className="max-w-5xl mx-auto pb-24">
+        {viewMode === 'list' ? (
+          <div className="divide-y divide-zinc-800/60">
+            {(showStarredOnly ? shelf.filter(i => i.listenAgain) : shelf).slice(0, visibleCount).map((item) => {
+              const deltaX = swipeState.id === item.id ? swipeState.deltaX : 0;
+              const isReleasing = swipeState.id !== item.id;
+              const primaryText = item.type === 'artist' ? item.name : item.title;
+              const secondaryText = item.type === 'artist' ? (item.disambiguation || 'Artist') : item.artist;
+              return (
+                <div key={item.id} className="relative overflow-hidden">
+                  <div className="absolute inset-0 bg-amber-500 flex items-center pl-4">
+                    <Star className="w-5 h-5 text-white" strokeWidth={2} />
+                  </div>
+                  <div className="absolute inset-0 bg-red-600 flex items-center justify-end pr-4">
+                    <Trash2 className="w-5 h-5 text-white" strokeWidth={2} />
+                  </div>
+                  <div
+                    className="relative z-10 flex items-center gap-3 px-4 py-3 bg-zinc-950"
+                    style={{
+                      transform: `translateX(${deltaX}px)`,
+                      transition: isReleasing ? 'transform 0.2s ease' : 'none',
+                    }}
+                    onTouchStart={(e) => handleSwipeStart(e, item.id)}
+                    onTouchMove={handleSwipeMove}
+                    onTouchEnd={handleSwipeEnd}
+                    onTouchCancel={handleSwipeEnd}
+                  >
+                    <button
+                      onClick={() => toggleListened(item)}
+                      className="shrink-0 p-1 transition-transform active:scale-90"
+                      title={item.listened ? 'Mark as unlistened' : 'Mark as listened'}
+                    >
+                      {item.listened ? (
+                        <Check className="w-5 h-5 text-indigo-400" strokeWidth={2.5} />
+                      ) : (
+                        <Circle className="w-5 h-5 text-zinc-600" strokeWidth={2} />
+                      )}
+                    </button>
+                    <div className={`flex-1 min-w-0 ${item.listened ? 'opacity-50' : ''}`}>
+                      <p className="font-semibold text-sm truncate text-zinc-100">{primaryText}</p>
+                      <p className="text-xs text-zinc-400 truncate mt-0.5">{secondaryText}</p>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        onClick={() => toggleListenAgain(item)}
+                        className="p-1.5 transition-transform active:scale-90"
+                        title={item.listenAgain ? 'Remove star' : 'Star'}
+                      >
+                        <Star
+                          className={`w-4 h-4 ${item.listenAgain ? 'text-amber-400 fill-amber-400' : 'text-zinc-600'}`}
+                          strokeWidth={2}
+                        />
+                      </button>
+                      {item.type !== 'mix' && item.spotifyUrl && (
+                        <a
+                          href={item.spotifyUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="p-1.5 text-zinc-600 hover:text-[#1DB954] transition-colors"
+                          title="Open in Spotify"
+                        >
+                          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/>
+                          </svg>
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+            {visibleCount < shelf.length && (
+              <div ref={sentinelRef} className="h-1" />
+            )}
+            {shelf.length === 0 && (
+              <div className="py-20 text-center text-zinc-600 border-2 border-dashed border-white/5 rounded-2xl">
+                <Music4 className="w-10 h-10 mx-auto mb-2 opacity-20" />
+                <p>Your shelf is empty.</p>
+                <p className="text-sm mt-1 opacity-60">Click the + button to add albums or artists</p>
+              </div>
+            )}
+          </div>
+        ) : (
         <div ref={gridRef} className="relative grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-6">
           {(showStarredOnly ? shelf.filter(i => i.listenAgain) : shelf).slice(0, visibleCount).map((item, index) => {
             const isDragging = draggedItem?.item.id === item.id;
@@ -1432,7 +1537,26 @@ const App = () => {
             </div>
           )}
         </div>
+        )}
       </main>
+
+      {/* Floating View Toggle */}
+      <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex bg-zinc-800 rounded-full p-1 gap-1 shadow-xl">
+        <button
+          onClick={() => setViewMode('list')}
+          className={`p-2 rounded-full transition-colors ${viewMode === 'list' ? 'bg-zinc-600 text-white' : 'text-zinc-400 hover:text-zinc-200'}`}
+          title="List view"
+        >
+          <List size={18} />
+        </button>
+        <button
+          onClick={() => setViewMode('grid')}
+          className={`p-2 rounded-full transition-colors ${viewMode === 'grid' ? 'bg-zinc-600 text-white' : 'text-zinc-400 hover:text-zinc-200'}`}
+          title="Grid view"
+        >
+          <LayoutGrid size={18} />
+        </button>
+      </div>
 
       {/* Expanded Cover Overlay */}
       {expandedItem && (
