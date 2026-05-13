@@ -1275,7 +1275,7 @@ const App = () => {
                     </div>
                   )}
                   <div
-                    className="relative z-10 flex items-center gap-3 px-4 py-3 bg-zinc-950"
+                    className="relative z-10 flex items-center gap-3 py-3 bg-zinc-950"
                     style={{
                       transform: `translateX(${deltaX}px)`,
                       transition: isReleasing ? 'transform 0.2s ease' : 'none',
