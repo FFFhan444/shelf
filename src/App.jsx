@@ -1256,7 +1256,7 @@ const App = () => {
 
       <main className="max-w-5xl mx-auto pb-24">
         {viewMode === 'list' ? (
-          <div className="divide-y divide-zinc-800/60">
+          <div className="-mx-6 divide-y divide-zinc-800/60">
             {(showStarredOnly ? shelf.filter(i => i.listenAgain) : shelf).slice(0, visibleCount).map((item) => {
               const deltaX = swipeState.id === item.id ? swipeState.deltaX : 0;
               const isReleasing = swipeState.id !== item.id;
@@ -1275,7 +1275,7 @@ const App = () => {
                     </div>
                   )}
                   <div
-                    className="relative z-10 flex items-center gap-3 py-3 bg-zinc-950"
+                    className="relative z-10 flex items-center gap-3 px-6 py-3 bg-zinc-950"
                     style={{
                       transform: `translateX(${deltaX}px)`,
                       transition: isReleasing ? 'transform 0.2s ease' : 'none',
