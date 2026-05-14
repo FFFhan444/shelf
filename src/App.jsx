@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Disc, Plus, Trash2, X, Music4, Check, Circle, User, RefreshCw, Loader2, Star, Radio, ExternalLink, List, LayoutGrid } from 'lucide-react';
+import { Disc, Plus, Trash2, X, Music4, Check, Circle, User, RefreshCw, Loader2, Star, Radio, ExternalLink, List, LayoutGrid, Calendar } from 'lucide-react';
 import { supabase } from './supabaseClient';
 
 // Map DB row (snake_case) to frontend object (camelCase)
@@ -41,6 +41,20 @@ const toDb = (item) => ({
   listen_again: item.listenAgain ?? false,
   item_order: item.order ?? null
 });
+
+// Format a MusicBrainz release date (YYYY, YYYY-MM, YYYY-MM-DD) for tooltip display
+const formatReleaseDate = (releaseDate) => {
+  if (!releaseDate) return '';
+  const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const parts = releaseDate.split('-');
+  if (parts.length >= 3) {
+    return `${parseInt(parts[2], 10)} ${monthNames[parseInt(parts[1], 10) - 1]} ${parts[0]}`;
+  }
+  if (parts.length === 2) {
+    return `${monthNames[parseInt(parts[1], 10) - 1]} ${parts[0]}`;
+  }
+  return parts[0];
+};
 
 // Returns a short label for upcoming releases, or null if already released
 const getReleaseBadge = (releaseDate) => {
@@ -203,6 +217,7 @@ const App = () => {
   const [showStarredOnly, setShowStarredOnly] = useState(false);
   const [viewMode, setViewMode] = useState('list');
   const [swipeState, setSwipeState] = useState({ id: null, startX: 0, deltaX: 0 });
+  const [calendarTooltip, setCalendarTooltip] = useState(null); // { id, text, x, y }
   const dragTimeoutRef = useRef(null);
   const gridRef = useRef(null);
   const sentinelRef = useRef(null);
@@ -1228,6 +1243,21 @@ const App = () => {
     return () => document.removeEventListener('keydown', onKey);
   }, [expandedItem]);
 
+  // Dismiss calendar tooltip on any click/tap outside
+  useEffect(() => {
+    if (!calendarTooltip) return;
+    const dismiss = () => setCalendarTooltip(null);
+    const timer = setTimeout(() => {
+      document.addEventListener('click', dismiss);
+      document.addEventListener('touchstart', dismiss);
+    }, 10);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener('click', dismiss);
+      document.removeEventListener('touchstart', dismiss);
+    };
+  }, [calendarTooltip?.id]);
+
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 p-6" style={{ paddingTop: 'calc(env(safe-area-inset-top) + 1.5rem)' }}>
       <div className="fixed top-0 left-0 right-0 z-50 pointer-events-none bg-zinc-950" style={{ height: 'env(safe-area-inset-top)' }} />
@@ -1323,6 +1353,19 @@ const App = () => {
                             <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/>
                           </svg>
                         </a>
+                      )}
+                      {getReleaseBadge(item.releaseDate) && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (calendarTooltip?.id === item.id) { setCalendarTooltip(null); return; }
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            setCalendarTooltip({ id: item.id, text: formatReleaseDate(item.releaseDate), x: rect.left + rect.width / 2, y: rect.top });
+                          }}
+                          className="p-1.5 rounded-full bg-indigo-600 transition-transform active:scale-90"
+                        >
+                          <Calendar className="w-3.5 h-3.5 text-white" strokeWidth={2} />
+                        </button>
                       )}
                     </div>
                   </div>
@@ -1595,6 +1638,17 @@ const App = () => {
             <p className="text-lg font-bold">{expandedItem.type === 'artist' ? expandedItem.name : expandedItem.title}</p>
             <p className="text-sm text-zinc-400 mt-0.5">{expandedItem.type === 'artist' ? 'Discography' : expandedItem.artist}</p>
           </div>
+        </div>
+      )}
+
+      {/* Calendar release date tooltip */}
+      {calendarTooltip && (
+        <div
+          className="fixed z-[110] bg-zinc-800 border border-white/10 text-white text-xs font-medium px-3 py-1.5 rounded-lg shadow-xl pointer-events-none"
+          style={{ left: calendarTooltip.x, top: calendarTooltip.y - 8, transform: 'translate(-50%, -100%)' }}
+        >
+          {calendarTooltip.text}
+          <div className="absolute top-full left-1/2 -translate-x-1/2 border-l-4 border-r-4 border-t-4 border-l-transparent border-r-transparent border-t-zinc-800" />
         </div>
       )}
 
