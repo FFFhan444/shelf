@@ -13,6 +13,21 @@ async function safeJson(res, label) {
   }
 }
 
+// Runs fn up to `attempts` times, waiting 300ms between tries. Spotify
+// occasionally returns an empty body or Java exception text instead of JSON.
+async function retry(fn, attempts) {
+  let lastErr;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      if (attempt < attempts - 1) await new Promise(r => setTimeout(r, 300));
+    }
+  }
+  throw lastErr;
+}
+
 async function getToken() {
   if (cachedToken && cachedToken.expiresAt > Date.now()) {
     return cachedToken.token;
@@ -21,36 +36,28 @@ async function getToken() {
   if (!SPOTIFY_CLIENT_ID || !SPOTIFY_CLIENT_SECRET) {
     throw new Error('Missing SPOTIFY_CLIENT_ID or SPOTIFY_CLIENT_SECRET env vars');
   }
-  // Retry once on transient Spotify auth service errors (empty body or Java
-  // exception text — both happen occasionally on client-credentials flow).
-  let lastErr;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const res = await fetch('https://accounts.spotify.com/api/token', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          Authorization: 'Basic ' + Buffer.from(
-            SPOTIFY_CLIENT_ID + ':' + SPOTIFY_CLIENT_SECRET
-          ).toString('base64'),
-        },
-        body: 'grant_type=client_credentials',
-      });
-      const data = await safeJson(res, 'Spotify token');
-      if (!data.access_token) {
-        throw new Error('Spotify token response missing access_token: ' + JSON.stringify(data));
-      }
-      cachedToken = {
-        token: data.access_token,
-        expiresAt: Date.now() + (data.expires_in - 60) * 1000,
-      };
-      return data.access_token;
-    } catch (e) {
-      lastErr = e;
-      if (attempt === 0) await new Promise(r => setTimeout(r, 300));
+  const data = await retry(async () => {
+    const res = await fetch('https://accounts.spotify.com/api/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Authorization: 'Basic ' + Buffer.from(
+          SPOTIFY_CLIENT_ID + ':' + SPOTIFY_CLIENT_SECRET
+        ).toString('base64'),
+      },
+      body: 'grant_type=client_credentials',
+    });
+    const json = await safeJson(res, 'Spotify token');
+    if (!json.access_token) {
+      throw new Error('Spotify token response missing access_token: ' + JSON.stringify(json));
     }
-  }
-  throw lastErr;
+    return json;
+  }, 2);
+  cachedToken = {
+    token: data.access_token,
+    expiresAt: Date.now() + (data.expires_in - 60) * 1000,
+  };
+  return data.access_token;
 }
 
 // Normalize a string for fuzzy comparison:
@@ -78,6 +85,11 @@ function yearOf(releaseDate) {
   if (!releaseDate) return null;
   const m = String(releaseDate).match(/^(\d{4})/);
   return m ? parseInt(m[1], 10) : null;
+}
+
+// Popularity tiebreaker — candidates don't always carry popularity, but when they do
+function withPopularity(score, candidate) {
+  return typeof candidate.popularity === 'number' ? score + candidate.popularity / 20 : score;
 }
 
 function scoreAlbum(candidate, expected) {
@@ -115,12 +127,7 @@ function scoreAlbum(candidate, expected) {
     }
   }
 
-  // Popularity tiebreaker (albums don't always carry popularity, but when they do)
-  if (typeof candidate.popularity === 'number') {
-    score += candidate.popularity / 20;
-  }
-
-  return score;
+  return withPopularity(score, candidate);
 }
 
 function scoreArtist(candidate, expected) {
@@ -132,10 +139,7 @@ function scoreArtist(candidate, expected) {
     if (nCandName === nExpName) score += 50;
     else if (nCandName.includes(nExpName) || nExpName.includes(nCandName)) score += 10;
   }
-  if (typeof candidate.popularity === 'number') {
-    score += candidate.popularity / 20;
-  }
-  return score;
+  return withPopularity(score, candidate);
 }
 
 const MIN_SCORE = 40;
@@ -162,31 +166,18 @@ export default async function handler(req, res) {
     const token = await getToken();
     // Spotify's search endpoint currently caps `limit` at 10 for this flow
     // (their docs still say 50, but the API returns "Invalid limit" above 10).
-    // Retry once on transient empty/non-JSON responses from Spotify.
-    let data;
-    let searchErr;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        const spotifyRes = await fetch(
-          `https://api.spotify.com/v1/search?q=${encodeURIComponent(q)}&type=${type}&limit=10`,
-          { headers: { Authorization: `Bearer ${token}` } }
-        );
-        data = await safeJson(spotifyRes, 'Spotify search');
-        searchErr = null;
-        break;
-      } catch (e) {
-        searchErr = e;
-        if (attempt === 0) await new Promise(r => setTimeout(r, 300));
-      }
-    }
-    if (searchErr) throw searchErr;
+    const data = await retry(async () => {
+      const spotifyRes = await fetch(
+        `https://api.spotify.com/v1/search?q=${encodeURIComponent(q)}&type=${type}&limit=10`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      return await safeJson(spotifyRes, 'Spotify search');
+    }, 3);
     const results = (type === 'artist' ? data.artists?.items : data.albums?.items) || [];
 
     // Verification fields — if provided, rank candidates; otherwise fall back
     // to the first result (legacy behavior for callers that only need image data).
-    const hasVerification = type === 'album'
-      ? Boolean(title || artist)
-      : Boolean(title || artist);
+    const hasVerification = Boolean(title || artist);
 
     let item = null;
     if (hasVerification && results.length) {

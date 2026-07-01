@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Disc, Plus, Trash2, X, Music4, Check, Circle, User, RefreshCw, Loader2, Star, Radio, ExternalLink, List, LayoutGrid, Calendar } from 'lucide-react';
 import { supabase } from './supabaseClient';
 
@@ -41,6 +41,15 @@ const toDb = (item) => ({
   listen_again: item.listenAgain ?? false,
   item_order: item.order ?? null
 });
+
+// The display title for any item type — artists show their name, everything else its title
+const displayTitle = (item) => item.type === 'artist' ? item.name : item.title;
+
+// The secondary line under the title — artists show disambiguation, everything else its artist
+const getSecondaryText = (item, artistFallback = '') =>
+  item.type === 'artist' ? (item.disambiguation || artistFallback) : item.artist;
+
+const MB_HEADERS = { 'User-Agent': 'VinylShelf/1.0.0 (local)' };
 
 // Format a MusicBrainz release date (YYYY, YYYY-MM, YYYY-MM-DD) for tooltip display
 const formatReleaseDate = (releaseDate) => {
@@ -106,6 +115,12 @@ const RotatingText = ({ text }) => {
   );
 };
 
+const SpotifyIcon = ({ className }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="currentColor">
+    <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/>
+  </svg>
+);
+
 // Accent colors for placeholder covers
 const COVER_COLORS = [
   '#6366f1', // indigo
@@ -128,8 +143,8 @@ const hashStr = (s) => {
 };
 
 const PlaceholderCover = ({ item }) => {
-  const label = item.type === 'artist' ? item.name : item.title;
-  const sublabel = item.type === 'artist' ? (item.disambiguation || '') : (item.artist || '');
+  const label = displayTitle(item);
+  const sublabel = getSecondaryText(item) || '';
   const seed = hashStr(label || sublabel || 'shelf');
   const bg = COVER_COLORS[seed % COVER_COLORS.length];
   // Darken for bottom gradient
@@ -377,7 +392,7 @@ const App = () => {
     );
     observer.observe(el);
     return () => observer.disconnect();
-  });
+  }, [viewMode, visibleCount, shelf.length]);
 
   const handleDragStart = (e, item, index) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -469,8 +484,18 @@ const App = () => {
     handleDragEnd(e);
   };
 
+  // Runs fn, logging and swallowing any error so callers can treat "no cover found" uniformly.
+  const tryFetch = async (errorMessage, fn) => {
+    try {
+      return await fn();
+    } catch (e) {
+      console.warn(errorMessage, e);
+      return null;
+    }
+  };
+
   // Helper: fetch cover from Spotify via serverless proxy
-  const fetchSpotifyCover = async (artist, album) => {
+  const fetchSpotifyCover = (artist, album) => tryFetch('Spotify cover fetch failed', async () => {
     const lookup = async (q) => {
       const params = new URLSearchParams({
         q,
@@ -482,81 +507,70 @@ const App = () => {
       const data = await res.json();
       return data.imageUrl || null;
     };
-    try {
-      // Field-filtered query is strictest — best when it hits.
-      const filtered = `album:"${album}" artist:"${artist}"`;
-      const hit = await lookup(filtered);
-      if (hit) return hit;
-      // Fallback: plain-text query. Server still scores against title/artist,
-      // so a wrong match is rejected by MIN_SCORE rather than returned.
-      return await lookup(`${album} ${artist}`);
-    } catch (e) {
-      console.warn('Spotify cover fetch failed', e);
-    }
-    return null;
-  };
+    // Field-filtered query is strictest — best when it hits.
+    const filtered = `album:"${album}" artist:"${artist}"`;
+    const hit = await lookup(filtered);
+    if (hit) return hit;
+    // Fallback: plain-text query. Server still scores against title/artist,
+    // so a wrong match is rejected by MIN_SCORE rather than returned.
+    return await lookup(`${album} ${artist}`);
+  });
 
   // Helper: fetch cover from Cover Art Archive
-  const fetchCaaCover = async (artist, album) => {
-    try {
-      const res = await fetch(
-        `https://musicbrainz.org/ws/2/release-group/?query=releasegroup:${encodeURIComponent(album)}%20AND%20artist:${encodeURIComponent(artist)}&fmt=json`,
-        { headers: { 'User-Agent': 'VinylShelf/1.0.0 (local)' } }
-      );
-      const data = await res.json();
-      const rgId = data['release-groups']?.[0]?.id;
-      if (rgId) {
-        const caaUrl = `https://coverartarchive.org/release-group/${rgId}/front-500`;
-        const head = await fetch(caaUrl, { method: 'HEAD' });
-        if (head.ok) return caaUrl;
-      }
-    } catch (e) {
-      console.warn('CAA fetch failed', e);
+  const fetchCaaCover = (artist, album) => tryFetch('CAA fetch failed', async () => {
+    const res = await fetch(
+      `https://musicbrainz.org/ws/2/release-group/?query=releasegroup:${encodeURIComponent(album)}%20AND%20artist:${encodeURIComponent(artist)}&fmt=json`,
+      { headers: MB_HEADERS }
+    );
+    const data = await res.json();
+    const rgId = data['release-groups']?.[0]?.id;
+    if (rgId) {
+      const caaUrl = `https://coverartarchive.org/release-group/${rgId}/front-500`;
+      const head = await fetch(caaUrl, { method: 'HEAD' });
+      if (head.ok) return caaUrl;
     }
     return null;
-  };
+  });
 
   // Helper: fetch cover from iTunes Search API
-  const fetchItunesCover = async (artist, album) => {
-    try {
-      const res = await fetch(
-        `https://itunes.apple.com/search?term=${encodeURIComponent(artist + ' ' + album)}&media=music&entity=album&limit=3`
-      );
-      const data = await res.json();
-      if (data.results?.length) {
-        // Try to find best match by comparing names
-        const query = (artist + ' ' + album).toLowerCase();
-        const best = data.results.find(r =>
-          query.includes(r.artistName?.toLowerCase()) || query.includes(r.collectionName?.toLowerCase())
-        ) || data.results[0];
-        if (best.artworkUrl100) {
-          return best.artworkUrl100.replace('100x100', '600x600');
-        }
+  const fetchItunesCover = (artist, album) => tryFetch('iTunes fetch failed', async () => {
+    const res = await fetch(
+      `https://itunes.apple.com/search?term=${encodeURIComponent(artist + ' ' + album)}&media=music&entity=album&limit=3`
+    );
+    const data = await res.json();
+    if (data.results?.length) {
+      // Try to find best match by comparing names
+      const query = (artist + ' ' + album).toLowerCase();
+      const best = data.results.find(r =>
+        query.includes(r.artistName?.toLowerCase()) || query.includes(r.collectionName?.toLowerCase())
+      ) || data.results[0];
+      if (best.artworkUrl100) {
+        return best.artworkUrl100.replace('100x100', '600x600');
       }
-    } catch (e) {
-      console.warn('iTunes fetch failed', e);
     }
     return null;
-  };
+  });
 
   // Helper: fetch cover from Bandcamp (via CORS proxy)
-  const fetchBandcampCover = async (artist, album) => {
-    try {
-      const query = encodeURIComponent(artist + ' ' + album);
-      const proxyUrl = `https://corsproxy.io/?url=${encodeURIComponent(`https://bandcamp.com/search?q=${query}&item_type=a`)}`;
-      const res = await fetch(proxyUrl);
-      const html = await res.text();
-      const match = html.match(/<img[^>]+class="art"[^>]+src="([^"]+)"/);
-      if (match?.[1]) return match[1];
-    } catch (e) {
-      console.warn('Bandcamp fetch failed (CORS proxy may be down)', e);
-    }
-    return null;
-  };
+  const fetchBandcampCover = (artist, album) => tryFetch('Bandcamp fetch failed (CORS proxy may be down)', async () => {
+    const query = encodeURIComponent(artist + ' ' + album);
+    const proxyUrl = `https://corsproxy.io/?url=${encodeURIComponent(`https://bandcamp.com/search?q=${query}&item_type=a`)}`;
+    const res = await fetch(proxyUrl);
+    const html = await res.text();
+    const match = html.match(/<img[^>]+class="art"[^>]+src="([^"]+)"/);
+    return match?.[1] || null;
+  });
+
+  const markFetchingArt = (itemId) => setFetchingArt(prev => new Set(prev).add(itemId));
+  const clearFetchingArt = (itemId) => setFetchingArt(prev => {
+    const next = new Set(prev);
+    next.delete(itemId);
+    return next;
+  });
 
   // Fetch album artwork with fallback chain: CAA → iTunes → Bandcamp
   const fetchAlbumArtwork = async (artist, album, itemId) => {
-    setFetchingArt(prev => new Set(prev).add(itemId));
+    markFetchingArt(itemId);
     try {
       const coverUrl = await fetchSpotifyCover(artist, album)
         || await fetchCaaCover(artist, album)
@@ -580,24 +594,28 @@ const App = () => {
     } catch (e) {
       console.warn("Album art fetch failed", e);
     } finally {
-      setFetchingArt(prev => {
-        const next = new Set(prev);
-        next.delete(itemId);
-        return next;
-      });
+      clearFetchingArt(itemId);
     }
   };
 
   // Fetch artist image from multiple sources
   const fetchArtistImage = async (artistName, mbid, itemId) => {
-    setFetchingArt(prev => new Set(prev).add(itemId));
+    markFetchingArt(itemId);
+    // Persists a partial artist update to Supabase and mirrors it into local state.
+    const applyArtistUpdate = async (dbPatch, localPatchFor, errorLabel) => {
+      const { error } = await supabase.from('items').update(dbPatch).eq('id', itemId);
+      if (error) console.error(`Failed to update ${errorLabel}:`, error);
+      setShelf(prev => sortShelf(prev.map(item =>
+        item.id === itemId ? { ...item, ...localPatchFor(item) } : item
+      )));
+    };
     try {
       // If no MBID provided, search MusicBrainz first to get one
       let artistMbid = mbid;
       if (!artistMbid) {
         const mbSearchRes = await fetch(
           `https://musicbrainz.org/ws/2/artist/?query=${encodeURIComponent(artistName)}&fmt=json&limit=3`,
-          { headers: { 'User-Agent': 'VinylShelf/1.0.0 (local)' } }
+          { headers: MB_HEADERS }
         );
         const mbSearchData = await mbSearchRes.json();
         // Try to find exact or close match
@@ -609,21 +627,14 @@ const App = () => {
 
       // Try Spotify first (fast and reliable)
       try {
-        const spotifyRes = await fetch(`/api/spotify?q=${encodeURIComponent(`artist:"${artistName}"`)}&type=artist`);
+        const spotifyRes = await fetch(buildSpotifyRequest({ type: 'artist', name: artistName }));
         const spotifyData = await spotifyRes.json();
         if (spotifyData.imageUrl) {
-          const { error } = await supabase
-            .from('items')
-            .update({ cover_url: spotifyData.imageUrl, mbid: artistMbid })
-            .eq('id', itemId);
-          if (error) console.error('Failed to update artist image:', error);
-
-          setShelf(prev => {
-            const updated = prev.map(item =>
-              item.id === itemId ? { ...item, coverUrl: spotifyData.imageUrl, mbid: artistMbid || item.mbid } : item
-            );
-            return sortShelf(updated);
-          });
+          await applyArtistUpdate(
+            { cover_url: spotifyData.imageUrl, mbid: artistMbid },
+            (item) => ({ coverUrl: spotifyData.imageUrl, mbid: artistMbid || item.mbid }),
+            'artist image'
+          );
           return;
         }
       } catch (e) {
@@ -641,19 +652,11 @@ const App = () => {
         // Prefer artistthumb, then artistfanart, then artistwide
         const imageUrl = artist.strArtistThumb || artist.strArtistFanart || artist.strArtistWideThumb;
         if (imageUrl) {
-          // Update in Supabase
-          const { error } = await supabase
-            .from('items')
-            .update({ cover_url: imageUrl, mbid: artistMbid })
-            .eq('id', itemId);
-          if (error) console.error('Failed to update artist image:', error);
-
-          setShelf(prev => {
-            const updated = prev.map(item =>
-              item.id === itemId ? { ...item, coverUrl: imageUrl, mbid: artistMbid || item.mbid } : item
-            );
-            return sortShelf(updated);
-          });
+          await applyArtistUpdate(
+            { cover_url: imageUrl, mbid: artistMbid },
+            (item) => ({ coverUrl: imageUrl, mbid: artistMbid || item.mbid }),
+            'artist image'
+          );
           return;
         }
       }
@@ -662,7 +665,7 @@ const App = () => {
       if (artistMbid) {
         const mbRes = await fetch(
           `https://musicbrainz.org/ws/2/artist/${artistMbid}?inc=url-rels&fmt=json`,
-          { headers: { 'User-Agent': 'VinylShelf/1.0.0 (local)' } }
+          { headers: MB_HEADERS }
         );
         const mbData = await mbRes.json();
 
@@ -688,19 +691,11 @@ const App = () => {
               // Verify the image exists
               const imgCheck = await fetch(imageUrl, { method: 'HEAD' });
               if (imgCheck.ok) {
-                // Update in Supabase
-                const { error } = await supabase
-                  .from('items')
-                  .update({ cover_url: imageUrl, mbid: artistMbid })
-                  .eq('id', itemId);
-                if (error) console.error('Failed to update artist image:', error);
-
-                setShelf(prev => {
-                  const updated = prev.map(item =>
-                    item.id === itemId ? { ...item, coverUrl: imageUrl, mbid: artistMbid } : item
-                  );
-                  return sortShelf(updated);
-                });
+                await applyArtistUpdate(
+                  { cover_url: imageUrl, mbid: artistMbid },
+                  () => ({ coverUrl: imageUrl, mbid: artistMbid }),
+                  'artist image'
+                );
                 return;
               }
             }
@@ -710,51 +705,22 @@ const App = () => {
 
       // If still no image, update with the MBID we found at least
       if (artistMbid && artistMbid !== mbid) {
-        const { error } = await supabase
-          .from('items')
-          .update({ mbid: artistMbid })
-          .eq('id', itemId);
-        if (error) console.error('Failed to update mbid:', error);
-
-        setShelf(prev => {
-          const updated = prev.map(item =>
-            item.id === itemId ? { ...item, mbid: artistMbid } : item
-          );
-          return sortShelf(updated);
-        });
+        await applyArtistUpdate(
+          { mbid: artistMbid },
+          () => ({ mbid: artistMbid }),
+          'mbid'
+        );
       }
     } catch (e) {
       console.warn("Artist image fetch failed", e);
     } finally {
-      setFetchingArt(prev => {
-        const next = new Set(prev);
-        next.delete(itemId);
-        return next;
-      });
+      clearFetchingArt(itemId);
     }
   };
 
-  // Simple hash function for Wikimedia URLs
-  const computeMD5Hash = async (str) => {
-    const encoder = new TextEncoder();
-    const data = encoder.encode(str);
-    const hashBuffer = await crypto.subtle.digest('MD5', data).catch(() => null);
-
-    if (!hashBuffer) {
-      // Fallback: simple hash simulation for MD5-like path generation
-      let hash = 0;
-      for (let i = 0; i < str.length; i++) {
-        const char = str.charCodeAt(i);
-        hash = ((hash << 5) - hash) + char;
-        hash = hash & hash;
-      }
-      const hex = Math.abs(hash).toString(16).padStart(2, '0');
-      return hex;
-    }
-
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-  };
+  // Simple hash for Wikimedia URLs — reuses hashStr's rolling hash rather than
+  // real MD5 (not a valid WebCrypto algorithm); just needs to be stable per filename.
+  const computeMD5Hash = (str) => hashStr(str).toString(16).padStart(2, '0');
 
   // Search MusicBrainz for albums and artists
   const handleSearch = async (val) => {
@@ -774,11 +740,11 @@ const App = () => {
         const [albumRes, artistRes] = await Promise.all([
           fetch(
             `https://musicbrainz.org/ws/2/release-group/?query=${encodeURIComponent(val)}&fmt=json&limit=4`,
-            { headers: { 'User-Agent': 'VinylShelf/1.0.0 (local)' } }
+            { headers: MB_HEADERS }
           ),
           fetch(
             `https://musicbrainz.org/ws/2/artist/?query=${encodeURIComponent(val)}&fmt=json&limit=4`,
-            { headers: { 'User-Agent': 'VinylShelf/1.0.0 (local)' } }
+            { headers: MB_HEADERS }
           )
         ]);
 
@@ -825,21 +791,17 @@ const App = () => {
     const yearMatch = String(item.year || item.releaseDate || '').match(/\d{4}/);
     const year = yearMatch ? parseInt(yearMatch[0], 10) : null;
 
-    let query;
+    const params = new URLSearchParams({ type });
     if (type === 'artist') {
-      query = `artist:"${name}"`;
+      params.set('q', `artist:"${name}"`);
+      if (name) params.set('title', name);
     } else {
-      query = `album:"${title}" artist:"${artist}"`;
+      let query = `album:"${title}" artist:"${artist}"`;
       if (year) query += ` year:${year}`;
-    }
-
-    const params = new URLSearchParams({ q: query, type });
-    if (type === 'album') {
+      params.set('q', query);
       if (title) params.set('title', title);
       if (artist) params.set('artist', artist);
       if (year) params.set('year', String(year));
-    } else {
-      if (name) params.set('title', name);
     }
     return `/api/spotify?${params.toString()}`;
   };
@@ -858,9 +820,26 @@ const App = () => {
     }
   };
 
-  const addAlbum = async (album) => {
+  // Builds a new item with common defaults, persists it to Supabase, and adds it to local state.
+  const createItem = async (fields, label) => {
     const newItem = {
       id: crypto.randomUUID(),
+      addedAt: new Date().toISOString(),
+      listened: false,
+      ...fields,
+    };
+    try {
+      const { error } = await supabase.from('items').insert(toDb(newItem));
+      if (error) console.error(`Failed to save ${label}:`, error);
+    } catch (e) {
+      console.error(`Failed to save ${label}:`, e);
+    }
+    setShelf(prev => sortShelf([...prev, newItem]));
+    return newItem;
+  };
+
+  const addAlbum = async (album) => {
+    const newItem = await createItem({
       type: 'album',
       title: album.title,
       artist: album.artist,
@@ -868,47 +847,19 @@ const App = () => {
       releaseDate: album.releaseDate,
       mbid: album.mbid,
       coverUrl: null,
-      addedAt: new Date().toISOString(),
-      listened: false
-    };
-
-    // Save to Supabase
-    try {
-      const { error } = await supabase
-        .from('items')
-        .insert(toDb(newItem));
-      if (error) console.error('Failed to save album:', error);
-    } catch (e) {
-      console.error('Failed to save album:', e);
-    }
-
-    setShelf(prev => sortShelf([...prev, newItem]));
+    }, 'album');
     fetchAlbumArtwork(album.artist, album.title, newItem.id);
     fetchSpotifyUrl(newItem);
   };
 
   const addArtist = async (artist) => {
-    const newItem = {
-      id: crypto.randomUUID(),
+    const newItem = await createItem({
       type: 'artist',
       name: artist.name,
       disambiguation: artist.disambiguation,
       mbid: artist.mbid,
       coverUrl: null,
-      addedAt: new Date().toISOString(),
-      listened: false
-    };
-
-    try {
-      const { error } = await supabase
-        .from('items')
-        .insert(toDb(newItem));
-      if (error) console.error('Failed to save artist:', error);
-    } catch (e) {
-      console.error('Failed to save artist:', e);
-    }
-
-    setShelf(prev => sortShelf([...prev, newItem]));
+    }, 'artist');
     fetchArtistImage(artist.name, artist.mbid, newItem.id);
     fetchSpotifyUrl(newItem);
   };
@@ -937,107 +888,49 @@ const App = () => {
 
     // If no dash, treat as artist name
     if (parts.length === 1) {
-      const artistName = input.trim();
-      // Add as artist, not album
-      const newItem = {
-        id: crypto.randomUUID(),
-        type: 'artist',
-        name: artistName,
-        disambiguation: '',
-        mbid: null,
-        coverUrl: null,
-        addedAt: new Date().toISOString(),
-        listened: false
-      };
-
-      // Save to Supabase
-      try {
-        const { error } = await supabase
-          .from('items')
-          .insert(toDb(newItem));
-        if (error) console.error('Failed to save artist:', error);
-      } catch (e) {
-        console.error('Failed to save artist:', e);
-      }
-
-      setShelf(prev => sortShelf([...prev, newItem]));
-
-      // Try to fetch artist image
-      fetchArtistImage(artistName, null, newItem.id);
-      fetchSpotifyUrl(newItem);
-      return;
+      return addArtist({ name: input.trim(), disambiguation: '', mbid: null });
     }
 
     // Has dash, treat as "Artist - Album"
-    let artist = parts[0];
-    let title = parts.slice(1).join(' - ');
+    const artist = parts[0];
+    const title = parts.slice(1).join(' - ');
 
     // Try to search MusicBrainz first to get proper metadata
     try {
       const response = await fetch(
         `https://musicbrainz.org/ws/2/release-group/?query=releasegroup:${encodeURIComponent(title)}%20AND%20artist:${encodeURIComponent(artist)}&fmt=json&limit=1`,
-        { headers: { 'User-Agent': 'VinylShelf/1.0.0 (local)' } }
+        { headers: MB_HEADERS }
       );
       const data = await response.json();
       const rg = data['release-groups']?.[0];
 
       if (rg) {
         // Found in MusicBrainz, add with full metadata
-        const album = {
+        return addAlbum({
           title: rg.title,
           artist: rg['artist-credit']?.[0]?.name || artist,
           year: rg['first-release-date']?.split('-')[0] || 'TBA',
           releaseDate: rg['first-release-date'] || null,
           mbid: rg.id
-        };
-        addAlbum(album);
-        return;
+        });
       }
     } catch (e) {
       console.warn('MusicBrainz search failed, adding as manual entry', e);
     }
 
     // Not found in MusicBrainz, add as manual entry
-    const newItem = {
-      id: crypto.randomUUID(),
-      type: 'album',
-      title: title,
-      artist: artist,
-      year: 'TBA',
-      mbid: null,
-      coverUrl: null,
-      addedAt: new Date().toISOString(),
-      listened: false
-    };
-
-    // Save to Supabase
-    try {
-      const { error } = await supabase
-        .from('items')
-        .insert(toDb(newItem));
-      if (error) console.error('Failed to save album:', error);
-    } catch (e) {
-      console.error('Failed to save album:', e);
-    }
-
-    setShelf(prev => sortShelf([...prev, newItem]));
-
-    // Try to fetch artwork
-    fetchAlbumArtwork(artist, title, newItem.id);
-    fetchSpotifyUrl(newItem);
+    return addAlbum({ title, artist, year: 'TBA', mbid: null });
   };
 
   const bulkImportAlbums = async (lines) => {
-    let imported = 0;
+    // lines is already blank-filtered by the caller (addManualEntry)
     for (const line of lines) {
-      if (!line.trim()) continue;
       await importSingleAlbum(line);
-      imported++;
       // Add delay to avoid rate limiting
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
     closeSearch();
-    alert(`Successfully imported ${imported} album(s)!`);
+    alert(`Successfully imported ${lines.length} album(s)!`);
   };
 
   const closeSearch = () => {
@@ -1129,45 +1022,33 @@ const App = () => {
 
   // Add a SoundCloud mix to the shelf
   const addMix = async (mix) => {
-    const newItem = {
-      id: crypto.randomUUID(),
+    await createItem({
       type: 'mix',
       title: mix.title,
       artist: mix.artist,
       coverUrl: mix.coverUrl || null,
       sourceUrl: mix.sourceUrl,
-      addedAt: new Date().toISOString(),
-      listened: false,
-    };
+    }, 'mix');
+  };
 
+  // Persists a single boolean field to Supabase and mirrors it into local state.
+  const updateItemFlag = async (item, dbField, localField, newValue, label) => {
     try {
-      const { error } = await supabase.from('items').insert(toDb(newItem));
-      if (error) console.error('Failed to save mix:', error);
+      const { error } = await supabase
+        .from('items')
+        .update({ [dbField]: newValue })
+        .eq('id', item.id);
+      if (error) console.error(`Failed to update ${label}:`, error);
     } catch (e) {
-      console.error('Failed to save mix:', e);
+      console.error(`Failed to update ${label}:`, e);
     }
-
-    setShelf(prev => sortShelf([...prev, newItem]));
+    setShelf(prev => prev.map(i => i.id === item.id ? { ...i, [localField]: newValue } : i));
   };
 
   const toggleListened = async (item) => {
     const newListened = !item.listened;
-
-    // Update in Supabase
-    try {
-      const { error } = await supabase
-        .from('items')
-        .update({ listened: newListened })
-        .eq('id', item.id);
-      if (error) console.error('Failed to update listened status:', error);
-    } catch (e) {
-      console.error('Failed to update listened status:', e);
-    }
-
-    // Update listened status immediately, then re-sort after a brief delay
-    setShelf(prev =>
-      prev.map(i => i.id === item.id ? { ...i, listened: newListened } : i)
-    );
+    await updateItemFlag(item, 'listened', 'listened', newListened, 'listened status');
+    // Re-sort after a brief delay so the "mark as listened" transition is visible first
     setTimeout(() => {
       setShelf(prev => sortShelf([...prev]));
     }, 400);
@@ -1175,20 +1056,7 @@ const App = () => {
 
   const toggleListenAgain = async (item) => {
     const newListenAgain = !item.listenAgain;
-
-    try {
-      const { error } = await supabase
-        .from('items')
-        .update({ listen_again: newListenAgain })
-        .eq('id', item.id);
-      if (error) console.error('Failed to update listen again status:', error);
-    } catch (e) {
-      console.error('Failed to update listen again status:', e);
-    }
-
-    setShelf(prev =>
-      prev.map(i => i.id === item.id ? { ...i, listenAgain: newListenAgain } : i)
-    );
+    await updateItemFlag(item, 'listen_again', 'listenAgain', newListenAgain, 'listen again status');
   };
 
   const handleSwipeStart = (e, itemId) => {
@@ -1258,6 +1126,11 @@ const App = () => {
     };
   }, [calendarTooltip?.id]);
 
+  const visibleItems = useMemo(
+    () => (showStarredOnly ? shelf.filter(i => i.listenAgain) : shelf).slice(0, visibleCount),
+    [shelf, showStarredOnly, visibleCount]
+  );
+
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 p-6" style={{ paddingTop: 'calc(env(safe-area-inset-top) + 1.5rem)' }}>
       <div className="fixed top-0 left-0 right-0 z-50 pointer-events-none bg-zinc-950" style={{ height: 'env(safe-area-inset-top)' }} />
@@ -1287,11 +1160,11 @@ const App = () => {
       <main className="max-w-5xl mx-auto pb-24">
         {viewMode === 'list' ? (
           <div className="-mx-6 divide-y divide-zinc-800/60">
-            {(showStarredOnly ? shelf.filter(i => i.listenAgain) : shelf).slice(0, visibleCount).map((item) => {
+            {visibleItems.map((item) => {
               const deltaX = swipeState.id === item.id ? swipeState.deltaX : 0;
               const isReleasing = swipeState.id !== item.id;
-              const primaryText = item.type === 'artist' ? item.name : item.title;
-              const secondaryText = item.type === 'artist' ? (item.disambiguation || 'Artist') : item.artist;
+              const primaryText = displayTitle(item);
+              const secondaryText = getSecondaryText(item, 'Artist');
               return (
                 <div key={item.id} className="relative overflow-hidden">
                   {deltaX > 0 && (
@@ -1349,9 +1222,7 @@ const App = () => {
                           className="p-1.5 text-zinc-600 hover:text-[#1DB954] transition-colors"
                           title="Open in Spotify"
                         >
-                          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
-                            <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/>
-                          </svg>
+                          <SpotifyIcon className="w-4 h-4" />
                         </a>
                       )}
                       {getReleaseBadge(item.releaseDate) && (
@@ -1385,7 +1256,7 @@ const App = () => {
           </div>
         ) : (
         <div ref={gridRef} className="relative grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-6">
-          {(showStarredOnly ? shelf.filter(i => i.listenAgain) : shelf).slice(0, visibleCount).map((item, index) => {
+          {visibleItems.map((item, index) => {
             const isDragging = draggedItem?.item.id === item.id;
             const isFetching = fetchingArt.has(item.id);
 
@@ -1440,7 +1311,7 @@ const App = () => {
                     loading="lazy"
                     decoding="async"
                     className="w-full h-full object-cover transition-opacity duration-500"
-                    alt={item.type === 'artist' ? item.name : item.title}
+                    alt={displayTitle(item)}
                     style={{ opacity: isFetching ? 0 : undefined }}
                     onLoad={(e) => { e.target.style.opacity = 1; }}
                   />
@@ -1515,9 +1386,7 @@ const App = () => {
                       className="p-2 bg-zinc-800/80 rounded-full hover:bg-[#1DB954] transition-all duration-200 active:scale-90"
                       title="Open in Spotify"
                     >
-                      <svg className="w-5 h-5 text-zinc-300" viewBox="0 0 24 24" fill="currentColor">
-                        <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/>
-                      </svg>
+                      <SpotifyIcon className="w-5 h-5 text-zinc-300" />
                     </a>
                   )}
                   {!item.coverUrl && item.type !== 'mix' && (
@@ -1625,7 +1494,7 @@ const App = () => {
             {expandedItem.coverUrl ? (
               <img
                 src={expandedItem.coverUrl}
-                alt={expandedItem.type === 'artist' ? expandedItem.name : expandedItem.title}
+                alt={displayTitle(expandedItem)}
                 className="w-full h-full object-cover rounded-lg shadow-2xl"
               />
             ) : (
@@ -1635,7 +1504,7 @@ const App = () => {
             )}
           </div>
           <div className="text-center pt-4 px-6 py-2 rounded-xl backdrop-blur-md bg-zinc-900/60 mt-4" onClick={(e) => e.stopPropagation()}>
-            <p className="text-lg font-bold">{expandedItem.type === 'artist' ? expandedItem.name : expandedItem.title}</p>
+            <p className="text-lg font-bold">{displayTitle(expandedItem)}</p>
             <p className="text-sm text-zinc-400 mt-0.5">{expandedItem.type === 'artist' ? 'Discography' : expandedItem.artist}</p>
           </div>
         </div>
