@@ -436,25 +436,24 @@ const App = () => {
     });
   }, [isLoaded]);
 
-  // One-shot backfill: fetch genre tags (MusicBrainz first, Last.fm fallback —
-  // see fetchGenres) for items that don't have any yet. Mixes are skipped — no
-  // reliable artist/release-group match exists for them. Gated by a
-  // localStorage flag so it runs once per client. Unlike the Spotify backfills
-  // above, this runs strictly sequentially with a delay between items —
-  // MusicBrainz's usage policy asks for roughly one request per second, and a
-  // concurrent worker pool would risk getting rate-limited or blocked.
+  // Backfill: fetch genre tags (MusicBrainz first, Last.fm fallback — see
+  // fetchGenres) for items that don't have any yet. Mixes are skipped — no
+  // reliable artist/release-group match exists for them. Runs once per page
+  // load (guarded by a ref, not a permanent localStorage flag) so items whose
+  // add-time fetch failed or never finished (e.g. a brand-new release with no
+  // MusicBrainz genre votes yet, or the tab closing mid-fetch) get retried on
+  // the next visit instead of staying genre-less forever. Unlike the Spotify
+  // backfills above, this runs strictly sequentially with a delay between
+  // items — MusicBrainz's usage policy asks for roughly one request per
+  // second, and a concurrent worker pool would risk getting rate-limited or
+  // blocked.
   const hasBackfilledGenres = useRef(false);
   useEffect(() => {
     if (!isLoaded || hasBackfilledGenres.current) return;
-    if (typeof window === 'undefined') return;
-    if (window.localStorage.getItem('mbGenreBackfillDone_v1')) return;
     hasBackfilledGenres.current = true;
 
     const targets = shelf.filter(i => (!i.genres || i.genres.length === 0) && i.type !== 'mix');
-    if (targets.length === 0) {
-      window.localStorage.setItem('mbGenreBackfillDone_v1', '1');
-      return;
-    }
+    if (targets.length === 0) return;
 
     (async () => {
       for (const item of targets) {
@@ -464,7 +463,6 @@ const App = () => {
         }
         await new Promise(r => setTimeout(r, 1100));
       }
-      window.localStorage.setItem('mbGenreBackfillDone_v1', '1');
       console.log('MusicBrainz genre backfill complete');
     })();
   }, [isLoaded]);
@@ -1406,7 +1404,7 @@ const App = () => {
       <div className="fixed top-0 left-0 right-0 z-50 pointer-events-none bg-zinc-950" style={{ height: 'env(safe-area-inset-top)' }} />
       <header className="w-full max-w-5xl mx-auto flex justify-between items-center mb-12 flex-shrink-0">
         <h1 className="text-2xl font-black uppercase tracking-tighter flex items-center gap-2">
-          <span className="relative inline-flex items-center justify-center w-8 h-8 rounded-full bg-indigo-500"><span className="w-2 h-2 rounded-full bg-zinc-950" /></span> Shelf
+          <span className="relative inline-flex items-center justify-center w-8 h-8 rounded-full bg-brand-500"><span className="w-2 h-2 rounded-full bg-zinc-950" /></span> Shelf
         </h1>
         <div className="flex items-center gap-3">
           <button
@@ -1420,7 +1418,7 @@ const App = () => {
           </button>
           <button
             onClick={() => setIsSearchOpen(true)}
-            className="bg-indigo-600 hover:bg-indigo-500 p-3 rounded-full shadow-lg transition-transform active:scale-95"
+            className="bg-brand-600 hover:bg-brand-500 p-3 rounded-full shadow-lg transition-transform active:scale-95"
           >
             <Plus className="w-6 h-6" />
           </button>
@@ -1428,11 +1426,19 @@ const App = () => {
       </header>
 
       {allGenres.length > 0 && (
-        <div className="max-w-5xl mx-auto mb-8 -mt-6 flex gap-2 overflow-x-auto no-scrollbar px-6 -mx-6">
+        <div
+          className="flex gap-2 mb-8 -mt-6 -mx-6 pr-6 overflow-x-auto no-scrollbar"
+          // Breaks out of the page's own px-6 to scroll edge-to-edge, then
+          // reinstates the same left inset the header sits at (24px, plus
+          // whatever extra max-w-5xl centering adds once the viewport is
+          // wider than the content column) so the "All" pill lines up with
+          // the Shelf logo instead of the viewport edge.
+          style={{ paddingLeft: 'max(1.5rem, calc(1.5rem + (100% - 67rem) / 2))' }}
+        >
           <button
             onClick={() => setActiveGenre(null)}
             className={`shrink-0 px-4 py-1.5 rounded-full text-sm font-bold transition-colors ${
-              !activeGenre ? 'bg-indigo-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'
+              !activeGenre ? 'bg-brand-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'
             }`}
           >
             All
@@ -1442,7 +1448,7 @@ const App = () => {
               key={g}
               onClick={() => setActiveGenre(prev => prev === g ? null : g)}
               className={`shrink-0 px-4 py-1.5 rounded-full text-sm font-bold transition-colors ${
-                activeGenre === g ? 'bg-indigo-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'
+                activeGenre === g ? 'bg-brand-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'
               }`}
             >
               {g}
@@ -1488,7 +1494,7 @@ const App = () => {
                       title={item.listened ? 'Mark as unlistened' : 'Mark as listened'}
                     >
                       {item.listened ? (
-                        <Check className="w-5 h-5 text-indigo-400" strokeWidth={2.5} />
+                        <Check className="w-5 h-5 text-brand-400" strokeWidth={2.5} />
                       ) : (
                         <Circle className="w-5 h-5 text-zinc-600" strokeWidth={2} />
                       )}
@@ -1527,7 +1533,7 @@ const App = () => {
                             const rect = e.currentTarget.getBoundingClientRect();
                             setCalendarTooltip({ id: item.id, text: formatReleaseDate(item.releaseDate), x: rect.left + rect.width / 2, y: rect.top });
                           }}
-                          className="p-1.5 rounded-full bg-indigo-600 transition-transform active:scale-90"
+                          className="p-1.5 rounded-full bg-brand-600 transition-transform active:scale-90"
                         >
                           <Calendar className="w-3.5 h-3.5 text-white" strokeWidth={2} />
                         </button>
@@ -1585,7 +1591,7 @@ const App = () => {
                   if (!badge) return null;
                   return (
                     <div
-                      className="absolute top-2 right-2 z-40 bg-indigo-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full shadow-lg"
+                      className="absolute top-2 right-2 z-40 bg-brand-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full shadow-lg"
                       title={`Release date: ${item.releaseDate}`}
                     >
                       {badge}
@@ -1693,7 +1699,7 @@ const App = () => {
                           fetchAlbumArtwork(item.artist, item.title, item.id);
                         }
                       }}
-                      className="p-2 bg-zinc-800/80 rounded-full hover:bg-indigo-600 transition-all duration-200 active:scale-90"
+                      className="p-2 bg-zinc-800/80 rounded-full hover:bg-brand-600 transition-all duration-200 active:scale-90"
                       title="Retry fetching artwork"
                     >
                       <RefreshCw className="w-5 h-5 text-zinc-300" />
@@ -1824,7 +1830,7 @@ const App = () => {
                 <button
                   onClick={() => { setSearchMode('music'); setSearchResults([]); setManualInput(''); }}
                   className={`px-4 py-1.5 rounded-full text-sm font-bold transition-colors ${
-                    searchMode === 'music' ? 'bg-indigo-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'
+                    searchMode === 'music' ? 'bg-brand-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'
                   }`}
                 >
                   Music
@@ -1843,7 +1849,7 @@ const App = () => {
                 autoFocus
                 rows={searchMode === 'music' && manualInput.includes('\n') ? 6 : 1}
                 placeholder={searchMode === 'music' ? 'Search for artist or album' : 'Paste SoundCloud URL or search mixes'}
-                className="w-full bg-zinc-900 border border-white/10 rounded-xl p-4 text-lg focus:ring-2 ring-indigo-500 outline-none resize-none"
+                className="w-full bg-zinc-900 border border-white/10 rounded-xl p-4 text-lg focus:ring-2 ring-brand-500 outline-none resize-none"
                 value={manualInput}
                 onChange={(e) => searchMode === 'music' ? handleSearch(e.target.value) : handleSoundCloudSearch(e.target.value)}
                 onKeyDown={(e) => {
@@ -1863,7 +1869,7 @@ const App = () => {
               <div className="mt-3 space-y-1">
                 {isSearching && (
                   <div className="flex justify-center py-4">
-                    <Loader2 className="animate-spin text-indigo-500 w-6 h-6" />
+                    <Loader2 className="animate-spin text-brand-500 w-6 h-6" />
                   </div>
                 )}
 
@@ -1881,14 +1887,14 @@ const App = () => {
                   <button
                     key={i}
                     onClick={() => selectSearchResult(r)}
-                    className="w-full flex items-center gap-3 p-3 bg-white/5 hover:bg-indigo-600 rounded-lg transition-colors group text-left"
+                    className="w-full flex items-center gap-3 p-3 bg-white/5 hover:bg-brand-600 rounded-lg transition-colors group text-left"
                   >
                     {r.type === 'album' ? (
                       <>
                         <Disc className="w-5 h-5 text-zinc-500 group-hover:text-white flex-shrink-0" />
                         <div className="min-w-0">
                           <p className="font-medium truncate group-hover:text-white">{r.title}</p>
-                          <p className="text-sm text-zinc-500 truncate group-hover:text-indigo-200">{r.artist}{r.year && ` • ${r.year}`}</p>
+                          <p className="text-sm text-zinc-500 truncate group-hover:text-brand-200">{r.artist}{r.year && ` • ${r.year}`}</p>
                         </div>
                       </>
                     ) : r.type === 'mix' ? (
@@ -1896,7 +1902,7 @@ const App = () => {
                         <Radio className="w-5 h-5 text-orange-500 group-hover:text-white flex-shrink-0" />
                         <div className="min-w-0">
                           <p className="font-medium truncate group-hover:text-white">{r.title}</p>
-                          <p className="text-sm text-zinc-500 truncate group-hover:text-indigo-200">
+                          <p className="text-sm text-zinc-500 truncate group-hover:text-brand-200">
                             {r.artist}
                             {r.duration && ` • ${Math.floor(r.duration / 60000)}min`}
                           </p>
@@ -1907,7 +1913,7 @@ const App = () => {
                         <User className="w-5 h-5 text-zinc-500 group-hover:text-white flex-shrink-0" />
                         <div className="min-w-0">
                           <p className="font-medium truncate group-hover:text-white">{r.name}</p>
-                          <p className="text-sm text-zinc-500 truncate group-hover:text-indigo-200">
+                          <p className="text-sm text-zinc-500 truncate group-hover:text-brand-200">
                             {r.disambiguation || r.country || 'Artist'}
                           </p>
                         </div>
