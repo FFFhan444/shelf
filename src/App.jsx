@@ -19,6 +19,7 @@ const fromDb = (row) => ({
   addedAt: row.added_at,
   listened: row.listened ?? false,
   listenAgain: row.listen_again ?? false,
+  genres: row.genres ?? [],
   order: row.item_order
 });
 
@@ -39,6 +40,7 @@ const toDb = (item) => ({
   added_at: item.addedAt,
   listened: item.listened ?? false,
   listen_again: item.listenAgain ?? false,
+  genres: item.genres ?? [],
   item_order: item.order ?? null
 });
 
@@ -50,6 +52,102 @@ const getSecondaryText = (item, artistFallback = '') =>
   item.type === 'artist' ? (item.disambiguation || artistFallback) : item.artist;
 
 const MB_HEADERS = { 'User-Agent': 'VinylShelf/1.0.0 (local)' };
+
+// Collapses MusicBrainz's granular genre tags (e.g. "spiritual jazz", "art rock",
+// "post-dubstep") into broader umbrella genres for the filter pills — otherwise
+// the pill row balloons with near-synonyms. Checked in order, most specific
+// first, so e.g. "jazz-funk" lands in Jazz rather than Soul & Funk. Raw tags are
+// still stored on the item as-is; this grouping is presentation-only.
+const GENRE_GROUPS = [
+  {
+    label: 'Hip-Hop',
+    keywords: ['hip hop', 'hip-hop', 'rap', 'trap', 'grime', 'boom bap', 'drill', 'jerk', 'plugg'],
+  },
+  { label: 'Reggae & Dub', keywords: ['reggae', 'dub', 'ska', 'dancehall'] },
+  { label: 'Punk & Metal', keywords: ['punk', 'metal', 'hardcore', 'grindcore'] },
+  { label: 'Jazz', keywords: ['jazz', 'bop', 'big band', 'bossa'] },
+  { label: 'Blues', keywords: ['blues'] },
+  { label: 'Gospel & Christmas', keywords: ['gospel', 'christmas', 'worship'] },
+  {
+    label: 'Classical',
+    keywords: ['classical', 'orchestra', 'opera', 'chamber', 'minimalism', 'minimalist'],
+  },
+  {
+    label: 'Folk & Country',
+    keywords: ['folk', 'country', 'bluegrass', 'americana', 'singer-songwriter', 'celtic'],
+  },
+  {
+    label: 'World & Latin',
+    keywords: ['afrobeat', 'highlife', 'world', 'latin', 'salsa', 'samba', 'cumbia', 'reggaeton',
+      'kuduro', 'mpb', 'indian classical'],
+  },
+  { label: 'Disco', keywords: ['disco'] },
+  { label: 'Soul & Funk', keywords: ['soul', 'funk', 'motown', 'r&b', 'rnb', 'boogie'] },
+  {
+    label: 'Electronic',
+    keywords: ['electro', 'house', 'techno', 'edm', 'synth', 'idm', 'downtempo',
+      'dubstep', 'drum and bass', "drill'n'bass", 'drill n bass', 'dnb', 'jungle', 'garage',
+      'trance', 'ambient', 'experimental', 'wave', 'ebm', 'new age', 'alternative dance',
+      'avant-garde', 'avant garde', 'berlin school', 'big beat', 'breakbeat', 'breakcore',
+      'breaks', 'bubblegum bass', 'chillout', 'chill', 'club', 'dance', 'glitch', 'hard drum',
+      'hauntology', 'industrial', 'leftfield', 'lo-fi', 'lofi', 'noise', 'trip hop',
+      'happy hardcore', 'hardcore techno', 'uk hardcore'],
+  },
+  { label: 'Rock', keywords: ['rock', 'grunge', 'shoegaze', 'gaze', 'progressive', 'emo', 'psychedel'] },
+  { label: 'Pop', keywords: ['pop', 'cinematic classical', 'classical crossover'] },
+];
+
+// Groups a raw MusicBrainz genre tag into a broad umbrella label, choosing the
+// longest matching keyword across all groups (not just the first group that
+// matches) — this resolves collisions like "drill and bass" (Electronic)
+// vs. bare "drill" (Hip-Hop) in favour of the more specific term. Anything
+// that matches no keyword at all falls into "Other" rather than becoming its
+// own standalone pill, so the pill row has a hard ceiling regardless of how
+// obscure a genre MusicBrainz or Last.fm might report.
+const genreGroupFor = (rawGenre) => {
+  const g = (rawGenre || '').toLowerCase();
+  let best = null;
+  for (const { label, keywords } of GENRE_GROUPS) {
+    for (const k of keywords) {
+      if (g.includes(k) && (!best || k.length > best.keyword.length)) {
+        best = { label, keyword: k };
+      }
+    }
+  }
+  return best ? best.label : 'Other';
+};
+
+// Last.fm's artist.getTopTags is unfiltered community folksonomy — it mixes
+// real genres in with place names ("brooklyn"), personal-list tags ("my top
+// songs"), and anything else a user felt like typing. A denylist can't keep up
+// with that (the junk is unbounded), so instead tags are validated against
+// MusicBrainz's own canonical genre dictionary (~2100 curated terms, fetched
+// once via loadMbGenreDictionary and cached) — accept only if it's a
+// recognised genre, rather than trying to enumerate everything that isn't one.
+//
+// Matching is punctuation/spacing-insensitive ("Hip-Hop" and "hip hop" both
+// resolve to MusicBrainz's canonical "hip hop") since Last.fm users spell the
+// same genre inconsistently. A couple of common abbreviations that don't
+// normalize to the same string as their canonical form get an explicit alias.
+const normalizeGenreTag = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+const LASTFM_GENRE_ALIASES = { rnb: 'r&b', dnb: 'drum and bass' };
+
+const cleanLastfmTags = (tags, genreDict, n = 5) => {
+  const out = [];
+  const seen = new Set();
+  for (const raw of (tags || [])) {
+    const t = (raw || '').trim();
+    if (!t) continue;
+    const alias = LASTFM_GENRE_ALIASES[t.toLowerCase()];
+    const canonical = genreDict.get(normalizeGenreTag(t)) || (alias && genreDict.get(normalizeGenreTag(alias)));
+    if (canonical && !seen.has(canonical)) {
+      seen.add(canonical);
+      out.push(canonical);
+    }
+  }
+  return out.slice(0, n);
+};
 
 // Format a MusicBrainz release date (YYYY, YYYY-MM, YYYY-MM-DD) for tooltip display
 const formatReleaseDate = (releaseDate) => {
@@ -230,12 +328,14 @@ const App = () => {
   const [expandedItem, setExpandedItem] = useState(null);
   const [visibleCount, setVisibleCount] = useState(15);
   const [showStarredOnly, setShowStarredOnly] = useState(false);
+  const [activeGenre, setActiveGenre] = useState(null);
   const [viewMode, setViewMode] = useState('list');
   const [swipeState, setSwipeState] = useState({ id: null, startX: 0, deltaX: 0 });
   const [calendarTooltip, setCalendarTooltip] = useState(null); // { id, text, x, y }
   const dragTimeoutRef = useRef(null);
   const gridRef = useRef(null);
   const sentinelRef = useRef(null);
+  const genreDictPromiseRef = useRef(null);
 
   // Load shelf from Supabase on mount
   useEffect(() => {
@@ -334,6 +434,39 @@ const App = () => {
       window.localStorage.setItem('spotifyRescoreDone_v2', '1');
       console.log('Spotify rescore complete');
     });
+  }, [isLoaded]);
+
+  // One-shot backfill: fetch genre tags (MusicBrainz first, Last.fm fallback —
+  // see fetchGenres) for items that don't have any yet. Mixes are skipped — no
+  // reliable artist/release-group match exists for them. Gated by a
+  // localStorage flag so it runs once per client. Unlike the Spotify backfills
+  // above, this runs strictly sequentially with a delay between items —
+  // MusicBrainz's usage policy asks for roughly one request per second, and a
+  // concurrent worker pool would risk getting rate-limited or blocked.
+  const hasBackfilledGenres = useRef(false);
+  useEffect(() => {
+    if (!isLoaded || hasBackfilledGenres.current) return;
+    if (typeof window === 'undefined') return;
+    if (window.localStorage.getItem('mbGenreBackfillDone_v1')) return;
+    hasBackfilledGenres.current = true;
+
+    const targets = shelf.filter(i => (!i.genres || i.genres.length === 0) && i.type !== 'mix');
+    if (targets.length === 0) {
+      window.localStorage.setItem('mbGenreBackfillDone_v1', '1');
+      return;
+    }
+
+    (async () => {
+      for (const item of targets) {
+        const genres = await fetchGenres(item);
+        if (genres?.length) {
+          await updateItemFlag(item, 'genres', 'genres', genres, 'genres');
+        }
+        await new Promise(r => setTimeout(r, 1100));
+      }
+      window.localStorage.setItem('mbGenreBackfillDone_v1', '1');
+      console.log('MusicBrainz genre backfill complete');
+    })();
   }, [isLoaded]);
 
   // Auto-retry artwork for items that are missing a cover. Runs once per
@@ -718,6 +851,127 @@ const App = () => {
     }
   };
 
+  // Top genre tags by community vote count, from a MusicBrainz `inc=genres` response.
+  const topGenres = (genresField, n = 5) =>
+    [...(genresField || [])].sort((a, b) => b.count - a.count).slice(0, n).map(g => g.name);
+
+  // Look up genre tags from MusicBrainz — release-group genres for albums/mixes,
+  // artist genres for artist entries. Reuses the item's stored mbid when present
+  // (release-group id for albums, artist id for artists — see addAlbum/addArtist),
+  // otherwise resolves one via search first.
+  const fetchGenresFromMusicBrainz = (item) => tryFetch('MusicBrainz genre lookup failed', async () => {
+    if (item.type === 'artist') {
+      let artistMbid = item.mbid;
+      if (!artistMbid) {
+        const res = await fetch(
+          `https://musicbrainz.org/ws/2/artist/?query=${encodeURIComponent(item.name)}&fmt=json&limit=1`,
+          { headers: MB_HEADERS }
+        );
+        const data = await res.json();
+        artistMbid = data.artists?.[0]?.id;
+      }
+      if (!artistMbid) return null;
+      const res = await fetch(
+        `https://musicbrainz.org/ws/2/artist/${artistMbid}?inc=genres&fmt=json`,
+        { headers: MB_HEADERS }
+      );
+      const data = await res.json();
+      return topGenres(data.genres);
+    }
+
+    let rgMbid = item.mbid;
+    if (!rgMbid) {
+      const res = await fetch(
+        `https://musicbrainz.org/ws/2/release-group/?query=releasegroup:${encodeURIComponent(item.title)}%20AND%20artist:${encodeURIComponent(item.artist)}&fmt=json&limit=1`,
+        { headers: MB_HEADERS }
+      );
+      const data = await res.json();
+      rgMbid = data['release-groups']?.[0]?.id;
+    }
+    if (!rgMbid) return null;
+    const res = await fetch(
+      `https://musicbrainz.org/ws/2/release-group/${rgMbid}?inc=genres&fmt=json`,
+      { headers: MB_HEADERS }
+    );
+    const data = await res.json();
+    return topGenres(data.genres);
+  });
+
+  // Fetches MusicBrainz's full canonical genre dictionary (~2100 terms) once,
+  // caching it in localStorage so subsequent loads (even across page
+  // refreshes) are instant. Concurrent callers share the same in-flight
+  // promise rather than each re-triggering the ~24s paginated fetch.
+  const loadMbGenreDictionary = () => {
+    if (genreDictPromiseRef.current) return genreDictPromiseRef.current;
+    genreDictPromiseRef.current = (async () => {
+      let names = null;
+      if (typeof window !== 'undefined') {
+        const cached = window.localStorage.getItem('mbGenreDictionary_v1');
+        if (cached) {
+          try { names = JSON.parse(cached); } catch { /* fall through to refetch */ }
+        }
+      }
+      if (!names) {
+        names = [];
+        let offset = 0;
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          const res = await fetch(
+            `https://musicbrainz.org/ws/2/genre/all?fmt=json&limit=100&offset=${offset}`,
+            { headers: MB_HEADERS }
+          );
+          const data = await res.json();
+          const genres = data.genres || [];
+          names.push(...genres.map(g => g.name.toLowerCase()));
+          offset += 100;
+          if (offset >= (data['genre-count'] || 0)) break;
+          await new Promise(r => setTimeout(r, 1100));
+        }
+        if (typeof window !== 'undefined') {
+          try { window.localStorage.setItem('mbGenreDictionary_v1', JSON.stringify(names)); } catch { /* storage full — non-fatal */ }
+        }
+      }
+      // Keyed by punctuation/spacing-normalized form so lookups tolerate
+      // formatting variants (see cleanLastfmTags).
+      const map = new Map();
+      for (const name of names) map.set(normalizeGenreTag(name), name);
+      return map;
+    })();
+    return genreDictPromiseRef.current;
+  };
+
+  // Look up genre-ish tags from Last.fm as a fallback when MusicBrainz has
+  // nothing — always by artist name, never album: album-level tagging on
+  // Last.fm is sparse enough (empirically ~1 in 5 albums has any tags at all)
+  // that it's not worth the extra request, and artist genre is a reasonable
+  // proxy for an album's genre anyway.
+  const fetchGenresFromLastfm = (item) => tryFetch('Last.fm genre lookup failed', async () => {
+    const apiKey = import.meta.env.VITE_LASTFM_API_KEY;
+    const artistName = item.type === 'artist' ? item.name : item.artist;
+    if (!apiKey || !artistName) return null;
+    const params = new URLSearchParams({
+      method: 'artist.gettoptags',
+      artist: artistName,
+      api_key: apiKey,
+      format: 'json',
+    });
+    const res = await fetch(`https://ws.audioscrobbler.com/2.0/?${params.toString()}`);
+    const data = await res.json();
+    const rawTags = data.toptags?.tag;
+    const tags = Array.isArray(rawTags) ? rawTags : (rawTags ? [rawTags] : []);
+    const genreDict = await loadMbGenreDictionary();
+    const cleaned = cleanLastfmTags(tags.map(t => t.name), genreDict);
+    return cleaned.length ? cleaned : null;
+  });
+
+  // Genre lookup with fallback: MusicBrainz first (per-release specificity),
+  // then Last.fm if MusicBrainz has nothing.
+  const fetchGenres = async (item) => {
+    const mb = await fetchGenresFromMusicBrainz(item);
+    if (mb?.length) return mb;
+    return await fetchGenresFromLastfm(item);
+  };
+
   // Simple hash for Wikimedia URLs — reuses hashStr's rolling hash rather than
   // real MD5 (not a valid WebCrypto algorithm); just needs to be stable per filename.
   const computeMD5Hash = (str) => hashStr(str).toString(16).padStart(2, '0');
@@ -850,6 +1104,9 @@ const App = () => {
     }, 'album');
     fetchAlbumArtwork(album.artist, album.title, newItem.id);
     fetchSpotifyUrl(newItem);
+    fetchGenres(newItem).then(genres => {
+      if (genres?.length) updateItemFlag(newItem, 'genres', 'genres', genres, 'genres');
+    });
   };
 
   const addArtist = async (artist) => {
@@ -862,6 +1119,9 @@ const App = () => {
     }, 'artist');
     fetchArtistImage(artist.name, artist.mbid, newItem.id);
     fetchSpotifyUrl(newItem);
+    fetchGenres(newItem).then(genres => {
+      if (genres?.length) updateItemFlag(newItem, 'genres', 'genres', genres, 'genres');
+    });
   };
 
   const addManualEntry = async () => {
@@ -1126,10 +1386,20 @@ const App = () => {
     };
   }, [calendarTooltip?.id]);
 
-  const visibleItems = useMemo(
-    () => (showStarredOnly ? shelf.filter(i => i.listenAgain) : shelf).slice(0, visibleCount),
-    [shelf, showStarredOnly, visibleCount]
-  );
+  const allGenres = useMemo(() => {
+    const counts = new Map();
+    shelf.forEach(i => {
+      const groups = new Set((i.genres || []).map(genreGroupFor));
+      groups.forEach(g => counts.set(g, (counts.get(g) || 0) + 1));
+    });
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([label]) => label);
+  }, [shelf]);
+
+  const visibleItems = useMemo(() => {
+    let list = showStarredOnly ? shelf.filter(i => i.listenAgain) : shelf;
+    if (activeGenre) list = list.filter(i => (i.genres || []).some(g => genreGroupFor(g) === activeGenre));
+    return list.slice(0, visibleCount);
+  }, [shelf, showStarredOnly, activeGenre, visibleCount]);
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 p-6" style={{ paddingTop: 'calc(env(safe-area-inset-top) + 1.5rem)' }}>
@@ -1156,6 +1426,30 @@ const App = () => {
           </button>
         </div>
       </header>
+
+      {allGenres.length > 0 && (
+        <div className="max-w-5xl mx-auto mb-8 -mt-6 flex gap-2 overflow-x-auto no-scrollbar px-6 -mx-6">
+          <button
+            onClick={() => setActiveGenre(null)}
+            className={`shrink-0 px-4 py-1.5 rounded-full text-sm font-bold transition-colors ${
+              !activeGenre ? 'bg-indigo-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'
+            }`}
+          >
+            All
+          </button>
+          {allGenres.map(g => (
+            <button
+              key={g}
+              onClick={() => setActiveGenre(prev => prev === g ? null : g)}
+              className={`shrink-0 px-4 py-1.5 rounded-full text-sm font-bold transition-colors ${
+                activeGenre === g ? 'bg-indigo-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'
+              }`}
+            >
+              {g}
+            </button>
+          ))}
+        </div>
+      )}
 
       <main className="max-w-5xl mx-auto pb-24">
         {viewMode === 'list' ? (
