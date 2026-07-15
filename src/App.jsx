@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Disc, Plus, Trash2, X, Music4, Check, Circle, User, RefreshCw, Loader2, Star, Radio, ExternalLink, List, LayoutGrid, Calendar } from 'lucide-react';
+import { Disc, Plus, Trash2, Music4, Check, Circle, User, RefreshCw, Loader2, Star, Radio, ExternalLink, List, LayoutGrid, Calendar, ArrowLeft } from 'lucide-react';
 import { supabase } from './supabaseClient';
 
 // Map DB row (snake_case) to frontend object (camelCase)
@@ -185,34 +185,6 @@ const getReleaseBadge = (releaseDate) => {
   return `${monthNames[release.getMonth()]} ${release.getFullYear()}`;
 };
 
-// Component for the rotating arched text
-const RotatingText = ({ text }) => {
-  const characters = text.split("");
-  const degreeStep = 360 / Math.max(characters.length, 1);
-
-  return (
-    <div
-      className="absolute inset-0 flex items-center justify-center pointer-events-none overflow-hidden z-20"
-      style={{ animation: 'spin 12s linear infinite' }}
-    >
-      <div className="relative w-0 h-0 flex items-center justify-center">
-        {characters.map((char, i) => (
-          <span
-            key={i}
-            className="absolute whitespace-nowrap text-[9px] font-black uppercase tracking-[0.2em] text-white drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]"
-            style={{
-              transform: `rotate(${i * degreeStep}deg) translateY(-65px)`,
-              transformOrigin: 'center center'
-            }}
-          >
-            {char}
-          </span>
-        ))}
-      </div>
-    </div>
-  );
-};
-
 const SpotifyIcon = ({ className }) => (
   <svg className={className} viewBox="0 0 24 24" fill="currentColor">
     <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/>
@@ -330,8 +302,10 @@ const App = () => {
   const [showStarredOnly, setShowStarredOnly] = useState(false);
   const [activeGenre, setActiveGenre] = useState(null);
   const [viewMode, setViewMode] = useState('list');
-  const [swipeState, setSwipeState] = useState({ id: null, startX: 0, deltaX: 0 });
+  const [swipeState, setSwipeState] = useState({ id: null, startX: 0, startY: 0, deltaX: 0, axis: null });
   const [calendarTooltip, setCalendarTooltip] = useState(null); // { id, text, x, y }
+  const [draftGenres, setDraftGenres] = useState(null); // Set of umbrella labels while detail view open
+  const suppressRowClickRef = useRef(false);
   const dragTimeoutRef = useRef(null);
   const gridRef = useRef(null);
   const sentinelRef = useRef(null);
@@ -410,6 +384,9 @@ const App = () => {
       try {
         const res = await fetch(buildSpotifyRequest(item));
         const data = await res.json();
+        // An API failure (rate limit, outage) is not "no confident match" —
+        // only clear when the endpoint actually answered the query.
+        if (!res.ok || data.error) return;
         const newUrl = data.url || null;
         if (newUrl === item.spotifyUrl) return; // unchanged
         setShelf(prev => prev.map(i =>
@@ -1317,25 +1294,74 @@ const App = () => {
     await updateItemFlag(item, 'listen_again', 'listenAgain', newListenAgain, 'listen again status');
   };
 
-  const handleSwipeStart = (e, itemId) => {
-    setSwipeState({ id: itemId, startX: e.touches[0].clientX, deltaX: 0 });
+  const openDetail = (item) => {
+    setDraftGenres(new Set((item.genres || []).map(genreGroupFor).filter(l => l !== 'Other')));
+    setExpandedItem(item);
   };
 
+  // Merges the draft umbrella selection back into the item's raw genre tags
+  // and persists, then closes. Raw tags whose umbrella was deselected are
+  // dropped; tags that group to 'Other' aren't editable here so always
+  // survive; a newly selected umbrella not covered by any kept tag is stored
+  // as the label itself (every umbrella label round-trips through
+  // genreGroupFor to itself).
+  const closeDetail = () => {
+    const live = expandedItem && shelf.find(i => i.id === expandedItem.id);
+    if (live && draftGenres) {
+      const kept = (live.genres || []).filter(t => {
+        const l = genreGroupFor(t);
+        return l === 'Other' || draftGenres.has(l);
+      });
+      const covered = new Set(kept.map(genreGroupFor));
+      const next = [...kept, ...[...draftGenres].filter(l => !covered.has(l))];
+      if (JSON.stringify(next) !== JSON.stringify(live.genres || [])) {
+        updateItemFlag(live, 'genres', 'genres', next, 'genres');
+      }
+    }
+    setExpandedItem(null);
+    setDraftGenres(null);
+  };
+
+  const handleSwipeStart = (e, itemId) => {
+    suppressRowClickRef.current = false;
+    const touch = e.touches[0];
+    setSwipeState({ id: itemId, startX: touch.clientX, startY: touch.clientY, deltaX: 0, axis: null });
+  };
+
+  // Waits for ~10px of movement before deciding whether this gesture is a
+  // horizontal swipe or a vertical scroll, then locks to that axis for the
+  // rest of the gesture — otherwise a mostly-vertical scroll with a little
+  // sideways wobble would still accumulate deltaX and cross the action
+  // threshold in handleSwipeEnd.
   const handleSwipeMove = (e) => {
     if (!swipeState.id) return;
-    const deltaX = e.touches[0].clientX - swipeState.startX;
-    setSwipeState(s => ({ ...s, deltaX }));
+    const touch = e.touches[0];
+    const dx = touch.clientX - swipeState.startX;
+    const dy = touch.clientY - swipeState.startY;
+    setSwipeState(s => {
+      if (!s.id) return s;
+      let axis = s.axis;
+      if (!axis && (Math.abs(dx) > 10 || Math.abs(dy) > 10)) {
+        axis = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+      }
+      if (axis === 'y') return { ...s, axis, deltaX: 0 };
+      return { ...s, axis, deltaX: dx };
+    });
   };
 
   const handleSwipeEnd = () => {
-    const { id, deltaX } = swipeState;
-    if (deltaX < -80) {
+    const { id, deltaX, axis } = swipeState;
+    // Any x-locked gesture (even below the action threshold) must not also
+    // count as a tap — iOS is inconsistent about suppressing click after
+    // touchmove, so the ref makes it deterministic.
+    if (axis === 'x') suppressRowClickRef.current = true;
+    if (axis === 'x' && deltaX < -80) {
       removeRecord(id);
-    } else if (deltaX > 80) {
+    } else if (axis === 'x' && deltaX > 80) {
       const item = shelf.find(i => i.id === id);
       if (item) toggleListenAgain(item);
     }
-    setSwipeState({ id: null, startX: 0, deltaX: 0 });
+    setSwipeState({ id: null, startX: 0, startY: 0, deltaX: 0, axis: null });
   };
 
   const removeRecord = async (itemId) => {
@@ -1353,21 +1379,13 @@ const App = () => {
     setShelf(prev => prev.filter(i => i.id !== itemId));
   };
 
-  // Get display text for rotating label
-  const getRotatingText = (item) => {
-    if (item.type === 'artist') {
-      return `${item.name} — Discography — `;
-    }
-    return `${item.artist} — ${item.title} — `;
-  };
-
-  // Close expanded cover on Escape
+  // Close detail view on Escape (saves genre edits, same as the back button)
   useEffect(() => {
     if (!expandedItem) return;
-    const onKey = (e) => { if (e.key === 'Escape') setExpandedItem(null); };
+    const onKey = (e) => { if (e.key === 'Escape') closeDetail(); };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [expandedItem]);
+  }, [expandedItem, draftGenres, shelf]);
 
   // Dismiss calendar tooltip on any click/tap outside
   useEffect(() => {
@@ -1478,18 +1496,23 @@ const App = () => {
                     </div>
                   )}
                   <div
-                    className="relative z-10 flex items-center gap-3 px-6 py-3 bg-zinc-950"
+                    className="relative z-10 flex items-center gap-3 px-6 py-3 bg-zinc-950 cursor-pointer"
                     style={{
                       transform: `translateX(${deltaX}px)`,
                       transition: isReleasing ? 'transform 0.2s ease' : 'none',
+                      touchAction: 'pan-y',
                     }}
                     onTouchStart={(e) => handleSwipeStart(e, item.id)}
                     onTouchMove={handleSwipeMove}
                     onTouchEnd={handleSwipeEnd}
                     onTouchCancel={handleSwipeEnd}
+                    onClick={() => {
+                      if (suppressRowClickRef.current) { suppressRowClickRef.current = false; return; }
+                      openDetail(item);
+                    }}
                   >
                     <button
-                      onClick={() => toggleListened(item)}
+                      onClick={(e) => { e.stopPropagation(); toggleListened(item); }}
                       className="shrink-0 p-1 transition-transform active:scale-90"
                       title={item.listened ? 'Mark as unlistened' : 'Mark as listened'}
                     >
@@ -1505,7 +1528,7 @@ const App = () => {
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       <button
-                        onClick={() => toggleListenAgain(item)}
+                        onClick={(e) => { e.stopPropagation(); toggleListenAgain(item); }}
                         className="p-1.5 transition-transform active:scale-90"
                         title={item.listenAgain ? 'Remove star' : 'Star'}
                       >
@@ -1519,6 +1542,7 @@ const App = () => {
                           href={item.spotifyUrl}
                           target="_blank"
                           rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
                           className="p-1.5 text-zinc-600 hover:text-[#1DB954] transition-colors"
                           title="Open in Spotify"
                         >
@@ -1569,7 +1593,7 @@ const App = () => {
               onDragOver={(e) => handleDragOver(e, index)}
               onDragEnd={handleDragEnd}
               onDrop={(e) => handleDrop(e)}
-              onClick={() => { if (!draggedItem) setExpandedItem(item); }}
+              onClick={() => { if (!draggedItem) openDetail(item); }}
               className={`group relative aspect-square bg-zinc-900 overflow-hidden border border-white/5 shadow-xl ${
                 isDragging ? 'opacity-0' : ''
               } ${!isDragging && 'cursor-grab active:cursor-grabbing'}`}
@@ -1633,87 +1657,6 @@ const App = () => {
                 </div>
               )}
 
-              {/* Overlay Container */}
-              <div className={`absolute inset-0 transition-opacity duration-300 ${expandedItem ? 'opacity-0 pointer-events-none' : 'opacity-0 group-hover:opacity-100 pointer-events-none group-hover:pointer-events-auto'}`}>
-                {/* Blur and Darken Layer */}
-                <div className="absolute inset-0 bg-black/40 backdrop-blur-[2px] z-10" />
-
-                {/* Rotating Hover Label */}
-                <RotatingText text={getRotatingText(item)} />
-
-                {/* Action Buttons */}
-                <div className="absolute inset-0 flex items-center justify-center gap-3 z-30">
-                  <button
-                    onClick={(e) => { e.stopPropagation(); toggleListened(item); }}
-                    className={`p-2 rounded-full transition-all duration-200 active:scale-90 ${
-                      item.listened ? 'bg-green-600 hover:bg-green-500' : 'bg-zinc-800/80 hover:bg-zinc-700/80'
-                    }`}
-                    title={item.listened ? "Mark as unlistened" : "Mark as listened"}
-                  >
-                    {item.listened ? (
-                      <Check className="w-5 h-5 text-white" strokeWidth={2.5} />
-                    ) : (
-                      <Circle className="w-5 h-5 text-zinc-300" strokeWidth={2} />
-                    )}
-                  </button>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); toggleListenAgain(item); }}
-                    className={`p-2 rounded-full transition-all duration-200 active:scale-90 ${
-                      item.listenAgain ? 'bg-amber-500 hover:bg-amber-400' : 'bg-zinc-800/80 hover:bg-zinc-700/80'
-                    }`}
-                    title={item.listenAgain ? "Remove listen again flag" : "Flag to listen again"}
-                  >
-                    <Star className={`w-5 h-5 ${item.listenAgain ? 'text-white' : 'text-zinc-300'}`} strokeWidth={2} />
-                  </button>
-                  {item.type === 'mix' && item.sourceUrl && (
-                    <a
-                      href={item.sourceUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={(e) => e.stopPropagation()}
-                      className="p-2 bg-zinc-800/80 rounded-full hover:bg-orange-600 transition-all duration-200 active:scale-90"
-                      title="Open in SoundCloud"
-                    >
-                      <ExternalLink className="w-5 h-5 text-zinc-300" />
-                    </a>
-                  )}
-                  {item.type !== 'mix' && item.spotifyUrl && (
-                    <a
-                      href={item.spotifyUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={(e) => e.stopPropagation()}
-                      className="p-2 bg-zinc-800/80 rounded-full hover:bg-[#1DB954] transition-all duration-200 active:scale-90"
-                      title="Open in Spotify"
-                    >
-                      <SpotifyIcon className="w-5 h-5 text-zinc-300" />
-                    </a>
-                  )}
-                  {!item.coverUrl && item.type !== 'mix' && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (item.type === 'artist') {
-                          fetchArtistImage(item.name, item.mbid, item.id);
-                        } else {
-                          fetchAlbumArtwork(item.artist, item.title, item.id);
-                        }
-                      }}
-                      className="p-2 bg-zinc-800/80 rounded-full hover:bg-brand-600 transition-all duration-200 active:scale-90"
-                      title="Retry fetching artwork"
-                    >
-                      <RefreshCw className="w-5 h-5 text-zinc-300" />
-                    </button>
-                  )}
-                  <button
-                    onClick={(e) => { e.stopPropagation(); removeRecord(item.id); }}
-                    className="p-2 bg-zinc-800/80 rounded-full hover:bg-red-600 transition-all duration-200 active:scale-90"
-                    title="Remove from shelf"
-                  >
-                    <Trash2 className="w-5 h-5 text-zinc-300" />
-                  </button>
-                </div>
-              </div>
             </div>
             );
           })}
@@ -1774,41 +1717,140 @@ const App = () => {
         </button>
       </div>
 
-      {/* Expanded Cover Overlay */}
-      {expandedItem && (
-        <div
-          className="fixed inset-0 z-[60] flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm animate-fade-in"
-          onClick={() => setExpandedItem(null)}
-        >
-          <button
-            onClick={() => setExpandedItem(null)}
-            className="absolute top-6 right-6 p-2 text-white/70 hover:text-white transition-colors z-10"
-          >
-            <X className="w-8 h-8" />
-          </button>
+      {/* Item detail view */}
+      {expandedItem && (() => {
+        const item = shelf.find(i => i.id === expandedItem.id) || expandedItem;
+        const badge = getReleaseBadge(item.releaseDate);
+        const link = item.type === 'mix' ? item.sourceUrl : item.spotifyUrl;
+        return (
           <div
-            className="relative"
-            style={{ width: '85vmin', height: '85vmin', maxWidth: '85vmin', maxHeight: '85vmin' }}
-            onClick={(e) => e.stopPropagation()}
+            className="fixed inset-0 z-[60] bg-black overflow-y-auto animate-fade-in"
+            style={{ paddingTop: 'env(safe-area-inset-top)' }}
           >
-            {expandedItem.coverUrl ? (
-              <img
-                src={expandedItem.coverUrl}
-                alt={displayTitle(expandedItem)}
-                className="w-full h-full object-cover rounded-lg shadow-2xl"
-              />
-            ) : (
-              <div className="w-full h-full rounded-lg shadow-2xl overflow-hidden">
-                <PlaceholderCover item={expandedItem} />
+            <button
+              onClick={closeDetail}
+              className="fixed left-6 p-2 text-white/70 hover:text-white transition-colors z-10"
+              style={{ top: 'calc(env(safe-area-inset-top) + 1.5rem)' }}
+              title="Back"
+            >
+              <ArrowLeft className="w-7 h-7" />
+            </button>
+            <div
+              className="fixed right-6 flex items-center gap-3 z-10"
+              style={{ top: 'calc(env(safe-area-inset-top) + 1.5rem)' }}
+            >
+              <button
+                onClick={() => toggleListened(item)}
+                className={`p-3 rounded-full transition-all duration-200 active:scale-90 ${
+                  item.listened ? 'bg-green-600 hover:bg-green-500' : 'bg-zinc-800/80 hover:bg-zinc-700/80'
+                }`}
+                title={item.listened ? 'Mark as unlistened' : 'Mark as listened'}
+              >
+                {item.listened ? (
+                  <Check className="w-5 h-5 text-white" strokeWidth={2.5} />
+                ) : (
+                  <Circle className="w-5 h-5 text-zinc-300" strokeWidth={2} />
+                )}
+              </button>
+              <button
+                onClick={() => toggleListenAgain(item)}
+                className={`p-3 rounded-full transition-all duration-200 active:scale-90 ${
+                  item.listenAgain ? 'bg-amber-500 hover:bg-amber-400' : 'bg-zinc-800/80 hover:bg-zinc-700/80'
+                }`}
+                title={item.listenAgain ? 'Remove star' : 'Star'}
+              >
+                <Star className={`w-5 h-5 ${item.listenAgain ? 'text-white fill-white' : 'text-zinc-300'}`} strokeWidth={2} />
+              </button>
+            </div>
+            <div className="max-w-lg mx-auto px-6 pt-24 pb-16 flex flex-col items-center">
+              <div className="relative w-full aspect-square">
+                {item.coverUrl ? (
+                  <img
+                    src={item.coverUrl}
+                    alt={displayTitle(item)}
+                    className="w-full h-full object-cover rounded-lg shadow-2xl"
+                  />
+                ) : (
+                  <div className="w-full h-full rounded-lg shadow-2xl overflow-hidden">
+                    <PlaceholderCover item={item} />
+                  </div>
+                )}
+                {badge && (
+                  <div
+                    className="absolute bottom-3 left-1/2 -translate-x-1/2 bg-brand-600 text-white text-xs font-bold px-3 py-1 rounded-full shadow-lg whitespace-nowrap"
+                    title={formatReleaseDate(item.releaseDate)}
+                  >
+                    {badge}
+                  </div>
+                )}
               </div>
-            )}
+              <div className="text-center mt-5">
+                <p className="text-xl font-bold">{displayTitle(item)}</p>
+                <p className="text-sm text-zinc-400 mt-1">{item.type === 'artist' ? 'Discography' : item.artist}</p>
+              </div>
+              {draftGenres && (
+                <div className="flex flex-wrap justify-center gap-2 mt-6">
+                  {GENRE_GROUPS.map(({ label }) => (
+                    <button
+                      key={label}
+                      onClick={() => setDraftGenres(prev => {
+                        const next = new Set(prev);
+                        if (next.has(label)) next.delete(label); else next.add(label);
+                        return next;
+                      })}
+                      className={`px-4 py-1.5 rounded-full text-sm font-bold transition-colors ${
+                        draftGenres.has(label) ? 'bg-brand-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {link && (
+                <a
+                  href={link}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className={`flex items-center gap-2 mt-8 px-5 py-2.5 rounded-full text-sm font-bold bg-zinc-800 text-zinc-200 transition-colors ${
+                    item.type === 'mix' ? 'hover:bg-orange-600' : 'hover:bg-[#1DB954]'
+                  } hover:text-white`}
+                >
+                  {item.type === 'mix' ? (
+                    <><ExternalLink className="w-4 h-4" /> Open in SoundCloud</>
+                  ) : (
+                    <><SpotifyIcon className="w-4 h-4" /> Open in Spotify</>
+                  )}
+                </a>
+              )}
+              {!item.coverUrl && item.type !== 'mix' && (
+                <button
+                  onClick={() => {
+                    if (item.type === 'artist') {
+                      fetchArtistImage(item.name, item.mbid, item.id);
+                    } else {
+                      fetchAlbumArtwork(item.artist, item.title, item.id);
+                    }
+                  }}
+                  className="flex items-center gap-2 mt-4 px-5 py-2.5 rounded-full text-sm font-bold bg-zinc-800 text-zinc-200 hover:bg-brand-600 hover:text-white transition-colors"
+                >
+                  <RefreshCw className="w-4 h-4" /> Retry artwork
+                </button>
+              )}
+              <button
+                onClick={() => {
+                  removeRecord(item.id);
+                  setExpandedItem(null);
+                  setDraftGenres(null);
+                }}
+                className="flex items-center gap-2 mt-10 px-5 py-2.5 rounded-full text-sm font-bold bg-zinc-900 text-red-400 hover:bg-red-600 hover:text-white transition-colors"
+              >
+                <Trash2 className="w-4 h-4" /> Remove from shelf
+              </button>
+            </div>
           </div>
-          <div className="text-center pt-4 px-6 py-2 rounded-xl backdrop-blur-md bg-zinc-900/60 mt-4" onClick={(e) => e.stopPropagation()}>
-            <p className="text-lg font-bold">{displayTitle(expandedItem)}</p>
-            <p className="text-sm text-zinc-400 mt-0.5">{expandedItem.type === 'artist' ? 'Discography' : expandedItem.artist}</p>
-          </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Calendar release date tooltip */}
       {calendarTooltip && (
