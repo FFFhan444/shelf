@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
 import { Disc, Plus, Trash2, Music4, Check, Circle, User, RefreshCw, Loader2, Star, Radio, ExternalLink, List, LayoutGrid, Calendar, ArrowLeft } from 'lucide-react';
 import { supabase } from './supabaseClient';
 
@@ -96,6 +96,50 @@ const GENRE_GROUPS = [
   { label: 'Rock', keywords: ['rock', 'grunge', 'shoegaze', 'gaze', 'progressive', 'emo', 'psychedel'] },
   { label: 'Pop', keywords: ['pop', 'cinematic classical', 'classical crossover'] },
 ];
+
+// Single scrollable line of the umbrella genre pills, selected ones sorted to
+// the left. Tapping a pill toggles it and it slides to its new position
+// (FLIP: compare each pill's offsetLeft before/after the reorder and animate
+// the difference — offsetLeft rather than getBoundingClientRect so the row's
+// own scroll position doesn't produce phantom moves).
+const GenrePillRow = ({ selected, onToggle }) => {
+  const rowRef = useRef(null);
+  const positionsRef = useRef(new Map());
+  const ordered = [
+    ...GENRE_GROUPS.filter(g => selected.has(g.label)),
+    ...GENRE_GROUPS.filter(g => !selected.has(g.label)),
+  ];
+  useLayoutEffect(() => {
+    const prev = positionsRef.current;
+    for (const el of rowRef.current?.children || []) {
+      const old = prev.get(el.dataset.label);
+      const dx = old !== undefined ? old - el.offsetLeft : 0;
+      if (dx) {
+        el.animate(
+          [{ transform: `translateX(${dx}px)` }, { transform: 'translateX(0)' }],
+          { duration: 250, easing: 'ease' }
+        );
+      }
+      prev.set(el.dataset.label, el.offsetLeft);
+    }
+  });
+  return (
+    <div ref={rowRef} className="self-stretch flex gap-2 mt-6 -mx-6 px-6 overflow-x-auto no-scrollbar">
+      {ordered.map(({ label }) => (
+        <button
+          key={label}
+          data-label={label}
+          onClick={() => onToggle(label)}
+          className={`shrink-0 px-4 py-1.5 rounded-full text-sm font-bold transition-colors ${
+            selected.has(label) ? 'bg-brand-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'
+          }`}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+};
 
 // Groups a raw MusicBrainz genre tag into a broad umbrella label, choosing the
 // longest matching keyword across all groups (not just the first group that
@@ -1789,23 +1833,14 @@ const App = () => {
                 <p className="text-sm text-zinc-400 mt-1">{item.type === 'artist' ? 'Discography' : item.artist}</p>
               </div>
               {draftGenres && (
-                <div className="flex flex-wrap justify-center gap-2 mt-6">
-                  {GENRE_GROUPS.map(({ label }) => (
-                    <button
-                      key={label}
-                      onClick={() => setDraftGenres(prev => {
-                        const next = new Set(prev);
-                        if (next.has(label)) next.delete(label); else next.add(label);
-                        return next;
-                      })}
-                      className={`px-4 py-1.5 rounded-full text-sm font-bold transition-colors ${
-                        draftGenres.has(label) ? 'bg-brand-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'
-                      }`}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
+                <GenrePillRow
+                  selected={draftGenres}
+                  onToggle={(label) => setDraftGenres(prev => {
+                    const next = new Set(prev);
+                    if (next.has(label)) next.delete(label); else next.add(label);
+                    return next;
+                  })}
+                />
               )}
               {link && (
                 <a
