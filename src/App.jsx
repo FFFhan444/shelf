@@ -53,6 +53,23 @@ const getSecondaryText = (item, artistFallback = '') =>
 
 const MB_HEADERS = { 'User-Agent': 'VinylShelf/1.0.0 (local)' };
 
+// MusicBrainz search uses Lucene query syntax, where a bare "-" excludes the
+// next term — so a raw "Artist - Album" query gets silently corrupted. Strip
+// quotes/backslashes (which would break a quoted phrase) and detect the
+// artist/album separator so callers can build a structured query instead.
+const escapeLucene = (str) => str.replace(/["\\]/g, '');
+
+const parseSearchInput = (input) => {
+  const trimmed = input.trim();
+  const dashIndex = trimmed.indexOf(' - ');
+  if (dashIndex === -1) return { kind: 'freetext', text: trimmed };
+  return {
+    kind: 'structured',
+    artist: escapeLucene(trimmed.slice(0, dashIndex).trim()),
+    album: escapeLucene(trimmed.slice(dashIndex + 3).trim())
+  };
+};
+
 // Collapses MusicBrainz's granular genre tags (e.g. "spiritual jazz", "art rock",
 // "post-dubstep") into broader umbrella genres for the filter pills — otherwise
 // the pill row balloons with near-synonyms. Checked in order, most specific
@@ -332,6 +349,8 @@ const App = () => {
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
   const searchTimeoutRef = useRef(null);
+  const searchAbortRef = useRef(null);
+  const searchCacheRef = useRef(new Map());
 
   const [fetchingArt, setFetchingArt] = useState(new Set());
   const [searchMode, setSearchMode] = useState('music');
@@ -1002,50 +1021,139 @@ const App = () => {
 
     // Don't search if multiple lines or too short
     if (val.includes('\n') || val.length < 2) {
+      if (searchAbortRef.current) searchAbortRef.current.abort();
       setSearchResults([]);
       return;
     }
 
     searchTimeoutRef.current = setTimeout(async () => {
+      const parsed = parseSearchInput(val);
+      const cacheKey = parsed.kind === 'structured'
+        ? `s:${parsed.artist}|${parsed.album}`
+        : `f:${parsed.text}`;
+
+      const cached = searchCacheRef.current.get(cacheKey);
+      if (cached) {
+        setSearchResults(cached);
+        return;
+      }
+
+      if (searchAbortRef.current) searchAbortRef.current.abort();
+      const controller = new AbortController();
+      searchAbortRef.current = controller;
+
       setIsSearching(true);
       try {
-        // Search both albums and artists in parallel
-        const [albumRes, artistRes] = await Promise.all([
-          fetch(
-            `https://musicbrainz.org/ws/2/release-group/?query=${encodeURIComponent(val)}&fmt=json&limit=4`,
-            { headers: MB_HEADERS }
-          ),
-          fetch(
-            `https://musicbrainz.org/ws/2/artist/?query=${encodeURIComponent(val)}&fmt=json&limit=4`,
-            { headers: MB_HEADERS }
-          )
-        ]);
+        let results;
 
-        const albumData = await albumRes.json();
-        const artistData = await artistRes.json();
+        if (parsed.kind === 'structured') {
+          // "Artist - Album" — a single structured release-group query is both
+          // more accurate and faster than the two free-text requests below.
+          const query = `artist:"${parsed.artist}" AND releasegroup:"${parsed.album}"`;
+          const res = await fetch(
+            `https://musicbrainz.org/ws/2/release-group/?query=${encodeURIComponent(query)}&fmt=json&limit=6`,
+            { headers: MB_HEADERS, signal: controller.signal }
+          );
+          const data = await res.json();
+          const albums = data['release-groups']?.map(rg => ({
+            type: 'album',
+            title: rg.title,
+            artist: rg['artist-credit']?.[0]?.name || 'Unknown Artist',
+            year: rg['first-release-date']?.split('-')[0] || '',
+            releaseDate: rg['first-release-date'] || null,
+            mbid: rg.id,
+            score: Number(rg.score) || 0
+          })) || [];
+          results = albums.sort((a, b) => b.score - a.score);
+        } else {
+          const text = escapeLucene(parsed.text);
 
-        const albums = albumData['release-groups']?.map(rg => ({
-          type: 'album',
-          title: rg.title,
-          artist: rg['artist-credit']?.[0]?.name || 'Unknown Artist',
-          year: rg['first-release-date']?.split('-')[0] || '',
-          releaseDate: rg['first-release-date'] || null,
-          mbid: rg.id
-        })) || [];
+          const artistRes = await fetch(
+            `https://musicbrainz.org/ws/2/artist/?query=${encodeURIComponent(text)}&fmt=json&limit=4`,
+            { headers: MB_HEADERS, signal: controller.signal }
+          );
+          const artistData = await artistRes.json();
+          const rankedArtists = artistData.artists?.map(artist => ({
+            type: 'artist',
+            name: artist.name,
+            disambiguation: artist.disambiguation || '',
+            country: artist.country || '',
+            mbid: artist.id,
+            score: Number(artist.score) || 0
+          })) || [];
 
-        const artists = artistData.artists?.map(artist => ({
-          type: 'artist',
-          name: artist.name,
-          disambiguation: artist.disambiguation || '',
-          country: artist.country || '',
-          mbid: artist.id
-        })) || [];
+          const topArtist = rankedArtists[0];
 
-        // Interleave results - albums first, then artists
-        setSearchResults([...albums, ...artists]);
+          if (topArtist?.score === 100) {
+            // Exact artist-name match (MusicBrainz scores these 100, well clear of
+            // tribute acts/soundalikes) — browse their real discography instead of
+            // a generic text search, so e.g. "steely dan" doesn't surface albums
+            // that merely share the title or tribute bands of the same name.
+            const discogRes = await fetch(
+              `https://musicbrainz.org/ws/2/release-group?artist=${topArtist.mbid}&type=album|ep|single&fmt=json&limit=50`,
+              { headers: MB_HEADERS, signal: controller.signal }
+            );
+            const discogData = await discogRes.json();
+            const releaseGroups = discogData['release-groups'] || [];
+
+            const newestFirst = (list) => list
+              .slice()
+              .sort((a, b) => (b['first-release-date'] || '0000').localeCompare(a['first-release-date'] || '0000'));
+            const toResult = (rg) => ({
+              type: 'album',
+              title: rg.title,
+              artist: topArtist.name,
+              year: rg['first-release-date']?.split('-')[0] || '',
+              releaseDate: rg['first-release-date'] || null,
+              mbid: rg.id,
+              score: 100
+            });
+
+            const allAlbums = releaseGroups.filter(rg => rg['primary-type'] === 'Album');
+            const studioAlbums = allAlbums.filter(rg => !rg['secondary-types']?.length);
+            // Prioritise studio albums, but still surface compilations/live albums
+            // if that's all the artist has released.
+            const albums = newestFirst(studioAlbums.length ? studioAlbums : allAlbums).map(toResult);
+
+            // EPs and singles, appended after albums — skip remixes/live versions
+            // of the same release to avoid clutter, same as the album filter above.
+            const eps = newestFirst(releaseGroups.filter(rg => rg['primary-type'] === 'EP' && !rg['secondary-types']?.length)).map(toResult);
+            const singles = newestFirst(releaseGroups.filter(rg => rg['primary-type'] === 'Single' && !rg['secondary-types']?.length)).map(toResult);
+
+            results = [topArtist, ...albums, ...eps, ...singles];
+          } else {
+            // No confident single-artist match — fall back to a generic
+            // combined album+artist text search, most relevant first.
+            const albumRes = await fetch(
+              `https://musicbrainz.org/ws/2/release-group/?query=${encodeURIComponent(text)}&fmt=json&limit=4`,
+              { headers: MB_HEADERS, signal: controller.signal }
+            );
+            const albumData = await albumRes.json();
+            const albums = albumData['release-groups']?.map(rg => ({
+              type: 'album',
+              title: rg.title,
+              artist: rg['artist-credit']?.[0]?.name || 'Unknown Artist',
+              year: rg['first-release-date']?.split('-')[0] || '',
+              releaseDate: rg['first-release-date'] || null,
+              mbid: rg.id,
+              score: Number(rg.score) || 0
+            })) || [];
+
+            results = [...albums, ...rankedArtists].sort((a, b) => b.score - a.score);
+          }
+        }
+
+        searchCacheRef.current.set(cacheKey, results);
+        if (searchCacheRef.current.size > 50) {
+          searchCacheRef.current.delete(searchCacheRef.current.keys().next().value);
+        }
+
+        setSearchResults(results);
       } catch (e) {
-        console.error('Search failed:', e);
-        setSearchResults([]);
+        if (e.name !== 'AbortError') {
+          console.error('Search failed:', e);
+          setSearchResults([]);
+        }
       }
       setIsSearching(false);
     }, 300);
@@ -1162,22 +1270,20 @@ const App = () => {
   };
 
   const importSingleAlbum = async (input) => {
-    // Parse input - expect format like "Artist - Album" or just "Artist Name"
-    const parts = input.split('-').map(p => p.trim());
+    const parsed = parseSearchInput(input);
 
-    // If no dash, treat as artist name
-    if (parts.length === 1) {
-      return addArtist({ name: input.trim(), disambiguation: '', mbid: null });
+    // No dash, treat as artist name
+    if (parsed.kind === 'freetext') {
+      return addArtist({ name: parsed.text, disambiguation: '', mbid: null });
     }
 
-    // Has dash, treat as "Artist - Album"
-    const artist = parts[0];
-    const title = parts.slice(1).join(' - ');
+    const { artist, album: title } = parsed;
 
     // Try to search MusicBrainz first to get proper metadata
     try {
+      const query = `releasegroup:"${title}" AND artist:"${artist}"`;
       const response = await fetch(
-        `https://musicbrainz.org/ws/2/release-group/?query=releasegroup:${encodeURIComponent(title)}%20AND%20artist:${encodeURIComponent(artist)}&fmt=json&limit=1`,
+        `https://musicbrainz.org/ws/2/release-group/?query=${encodeURIComponent(query)}&fmt=json&limit=1`,
         { headers: MB_HEADERS }
       );
       const data = await response.json();
@@ -1924,6 +2030,8 @@ const App = () => {
 
               <textarea
                 autoFocus
+                autoCorrect="off"
+                spellCheck={false}
                 rows={searchMode === 'music' && manualInput.includes('\n') ? 6 : 1}
                 placeholder={searchMode === 'music' ? 'Search for artist or album' : 'Paste SoundCloud URL or search mixes'}
                 className="w-full bg-zinc-900 border border-white/10 rounded-xl p-4 text-lg focus:ring-2 ring-brand-500 outline-none resize-none"
