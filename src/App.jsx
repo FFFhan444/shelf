@@ -1062,6 +1062,7 @@ const App = () => {
             year: rg['first-release-date']?.split('-')[0] || '',
             releaseDate: rg['first-release-date'] || null,
             mbid: rg.id,
+            format: rg['primary-type'] || null,
             score: Number(rg.score) || 0
           })) || [];
           results = albums.sort((a, b) => b.score - a.score);
@@ -1106,6 +1107,7 @@ const App = () => {
               year: rg['first-release-date']?.split('-')[0] || '',
               releaseDate: rg['first-release-date'] || null,
               mbid: rg.id,
+              format: rg['primary-type'] || null,
               score: 100
             });
 
@@ -1136,6 +1138,7 @@ const App = () => {
               year: rg['first-release-date']?.split('-')[0] || '',
               releaseDate: rg['first-release-date'] || null,
               mbid: rg.id,
+              format: rg['primary-type'] || null,
               score: Number(rg.score) || 0
             })) || [];
 
@@ -2078,7 +2081,14 @@ const App = () => {
                       <>
                         <Disc className="w-5 h-5 text-zinc-500 group-hover:text-white flex-shrink-0" />
                         <div className="min-w-0">
-                          <p className="font-medium truncate group-hover:text-white">{r.title}</p>
+                          <div className="flex items-center gap-1.5">
+                            <p className="font-medium truncate group-hover:text-white min-w-0">{r.title}</p>
+                            {r.format && r.format !== 'Album' && (
+                              <span className="shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-zinc-700 text-zinc-300 group-hover:bg-white/20 group-hover:text-white">
+                                {r.format.toUpperCase()}
+                              </span>
+                            )}
+                          </div>
                           <p className="text-sm text-zinc-500 truncate group-hover:text-brand-200">{r.artist}{r.year && ` • ${r.year}`}</p>
                         </div>
                       </>
